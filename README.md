@@ -38,13 +38,13 @@ The application combines the performance of a native Python backend with the int
               │
               ├──► Select files/folders, Language, and Tour Name (PySide6 Dialog & Svelte)
               │
-              ├──► PHASE 0: Preventive Sorting (Date/Time or Filename)
+              ├──► PHASE 0: Multi-Level Sorting (EXIF → Regex → mtime → Import Order)
               │
               ├──► PHASE 1: Filtering and De-duplication (CLIP + Laplacian)
               │
-              ├──► PHASE 2: Photo Enrichment (EXIF + Local VLM with Context & Tour Name)
+              ├──► PHASE 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + VLM)
               │
-              ├──► PHASE 3: Clustering and Storyboard (Time/Space)
+              ├──► PHASE 3: Hybrid Clustering (Space-Time / Time+Visual / Semantic Change Detection)
               │
               ├──► PHASE 4: Storyboard Editor (Svelte UI - Manual Edits)
               │
@@ -53,64 +53,135 @@ The application combines the performance of a native Python backend with the int
               └──► [ HTML Player & Package Export ]
 ```
 
-### Phase 0: Startup, Initialization, and Preventive Sorting
+### Phase 0: Startup, Initialization, and Multi-Level Sorting (Sanitization)
 1.  **Homepage**: The user can resume a previously saved tour from the local SQLite database or start a new one.
-2.  **Initialization & Selection**:
+2.  **First-Launch Model Download**: On the very first run, **an internet connection is required** to download the AI models (CLIP, VLM, and LLM) from Hugging Face Hub. The application presents a one-time setup screen showing download progress for each model. Once downloaded, the models are cached locally under the TripTour application data directory, and all subsequent runs are fully offline. If models are already present (e.g., from a previous installation), this step is skipped automatically.
+3.  **Initialization & Selection**:
     * The user selects files or a folder using native PySide6 dialogs (`QFileDialog`). Imported photos may be in a completely unstructured order.
     * The user selects the language for the tour.
     * **Tour Name (New)**: The user inputs a descriptive title for the tour (e.g., *"Vatican Museums Visit"* or *"Tuscany Holidays 2026"*). This name is stored in the database and **becomes a crucial piece of metadata** passed to the AI models in subsequent stages to guide their understanding of historical, geographical, and artistic contexts.
-3.  **Preventive Sorting**: Before any analysis is performed, the backend sorts the photos chronologically:
-    * It attempts to extract the date and time of capture from the EXIF metadata (`DateTimeOriginal`).
-    * If one or more photos lack temporal metadata, the system falls back to sorting them alphabetically by filename (e.g., `IMG_001.jpg`, `IMG_002.jpg`).
+4.  **Multi-Level Sorting Strategy**: Before any analysis is performed, the backend applies a cascading sanitization pipeline to establish the best possible chronological order. Each photo is timestamped using the first available source in the following priority chain:
+
+    | Priority | Source | Description |
+    |----------|--------|-------------|
+    | **1 (Highest)** | `EXIF DateTimeOriginal` | Extracted from the image's internal EXIF metadata — the true capture timestamp. |
+    | **2** | **Regex Parsing on Filename** | A regex scans the filename for embedded timestamps (e.g., `IMG_20260725_143052.jpg`, `2026-07-25 14.30.45.png`, `VID-20260725-WA0001.jpeg`). Common patterns include `YYYYMMDD_HHMMSS`, `YYYY-MM-DD HH.MM.SS`, and WhatsApp-style `YYYYMMDD` prefixes. |
+    | **3** | **Filesystem Modification Time (`mtime`/`ctime`)** | If no timestamp can be extracted from EXIF or the filename, the backend falls back to the file's last modification time (or creation time on supported filesystems). |
+    | **4 (Lowest)** | **Native Import Order** | If all previous methods fail (e.g., files with generic names and corrupted metadata), the original order in which files were selected/imported is preserved as the last-resort fallback. |
+
+    *Each photo records a `sort_source` field in the database indicating which priority level was used, enabling transparency and potential manual correction in the Storyboard Editor.*
 
 ### Phase 1: Filtering & Duplicate Removal (Deduplication)
 Using the newly sorted sequence, to prevent visual redundancy (such as multiple shots of the same subject):
 1.  The backend loads a lightweight local image embedding model (e.g., `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` via Transformers).
-2.  It generates vectors (embeddings) for each photo.
+2.  It generates vectors (embeddings) for each photo. **These embeddings are persisted** (stored in the `embedding` column of the `media` table) for reuse in Phase 2.3 (CLIP visual affinity tie-breaking) and Phase 3 (Time+Visual and Semantic Change Detection clustering), avoiding redundant model reloads.
 3.  It calculates the cosine similarity between chronologically adjacent photos.
 4.  **Duplicate Resolution**: If two or more adjacent photos exceed a predefined similarity threshold (e.g., > 0.85):
     * The **Laplacian variance** is calculated for each photo to measure its sharpness (blurriness).
     * The sharpest photo (highest variance) is retained; the others are removed from the active tour sequence or hidden.
 
-```python
-import cv2
+### Phase 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + VLM)
+The enrichment phase follows an **Anchor-Based** strategy: photos with complete metadata (GPS + timestamp) serve as **Anchor Points**, and their contextual information is propagated forward and backward to neighboring photos that lack metadata. This ensures maximum coverage even when GPS or timestamps are partial or absent.
 
-def calculate_sharpness(image_path: str) -> float:
-    # Load the image in grayscale to calculate blur
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if image is None:
-        return 0.0
-    # Returns the Laplacian variance (higher = sharper)
-    return cv2.Laplacian(image, cv2.CV_64F).var()
-```
+#### Step 2.1: Classification and Anchor Identification
+Each photo in the sorted sequence is classified based on its metadata completeness:
 
-### Phase 2: Photo Enrichment (Triple Context Window + Tour Name)
-For each remaining photo, the backend initiates the analysis and tagging process. To prevent isolated or inaccurate descriptions of close-up details, the backend utilizes a **sliding triple-context window** enriched by the global tour context:
+| Class | GPS | Timestamp | Role |
+|-------|-----|-----------|------|
+| **Anchor (A)** | ✓ Present | ✓ Present | Reference point for geolocation and temporal context |
+| **Time-Only (T)** | ✗ Missing | ✓ Present | Positioned chronologically; location inherited from nearest anchors |
+| **Bare (B)** | ✗ Missing | ✗ Missing | No metadata; relies entirely on visual affinity to nearest anchors |
 
-1.  **EXIF Metadata**: Extraction of GPS coordinates, if present.
-2.  **Reverse Geocoding**: Conversion of GPS coordinates into human-readable addresses or points of interest. If GPS is missing, the photo is temporarily marked as "location unknown".
-3.  **Contextual Description Generation (VLM)**: 
-    * To analyze the current image N, the Python backend passes to the local Vision-Language Model (VLM, e.g., `Moondream2` or `Qwen2-VL-2B` loaded via `transformers`):
-        * The **Current Image N**.
-        * The **Previous Image N-1** coupled with its **already generated description** (if N > 1).
-        * The **Next Image N+1** as pure visual context (if N < total number of photos).
-        * The **Tour Name** provided by the user.
-    * The prompt instructs the model to recognize logical continuity and to use the tour title to deduce details that might otherwise not be obvious:
-      > *"The user is currently on a tour titled: **[Tour Name]**. I am showing you the current image (Photo B), embedded within this chronological sequence. I am also providing the previous photo (Photo A), described as '[Description A]', and the next photo (Photo C). Describe what Photo B depicts, taking into account the context of the tour '[Tour Name]' and the adjacent photos. If Photo B shows a close-up detail of a subject visible in Photo A or leading up to Photo C, explicitly state this in the description (e.g., 'This is a close-up detail of the left column of the church portico we just saw...')."*
+#### Step 2.2: EXIF Extraction & Reverse Geocoding (Anchors Only)
+For **Anchor photos only**, the backend performs full metadata extraction:
+1.  **EXIF Metadata**: Extraction of GPS coordinates (`GPSLatitude`, `GPSLongitude`, `GPSLatitudeRef`, `GPSLongitudeRef`).
+2.  **Reverse Geocoding — Offline-First with Optional Online Enrichment**: TripTour provides a **Settings toggle** (`Enable Online Services`) that controls whether online APIs are used. The toggle is **off by default**, respecting the offline-first philosophy.
+    * **Tier 1 — Local Reverse Geocoding (always active)**: A bundled offline geocoding library (library still to be selected — candidates include a local GeoNames-based SQLite gazetteer or `reverse_geocoder`) converts GPS coordinates into a human-readable place name (city, region, country). This runs fully offline with zero network dependency.
+    * **Tier 2 — Online Enrichment (only when toggle is ON)**:
+        * **OpenStreetMap (Nominatim)**: Performs high-accuracy reverse geocoding via `https://nominatim.openstreetmap.org/reverse`, enriching the location with detailed address data, points of interest, and boundary information.
+        * **Wikipedia API**: Queries the Wikipedia REST API (`/api/rest_v1/page/summary/{place_name}`) to fetch a brief cultural/historical summary paragraph about the geocoded location. This summary is stored in the `wikipedia_summary` field and passed to the LLM in Phase 5 for richer narrative generation.
+    * **Offline Fallback**: When the toggle is OFF or no internet connection is available, the cultural enrichment is delegated entirely to the **pre-trained knowledge of the local LLM (Phase 5)**, which receives the Tour Name and the offline-geocoded place name as context.
 
-### Phase 3: Logical Grouping (Clustering & Storyboard)
-The backend organizes the sorted sequence of photos into logical "Sections":
-1.  **Clustering Algorithm**: Groups photos together if they were taken in the same place (within a radius of ~100 meters) and within a continuous, narrow time window (e.g., within a few minutes of each other).
-2.  Each group defines a **Tour Section** (e.g., "Monumental Entrance", "Altar and Interiors").
-3.  A preliminary automatic section description is generated by merging the tags and contextualized descriptions of its constituent photos.
+#### Step 2.3: Context Propagation (Forward & Backward)
+Once Anchors are identified and enriched, context is propagated to non-anchor photos:
+
+1.  **Forward Pass**: For each photo without GPS, the backend walks forward through the sorted sequence to find the nearest Anchor and inherits its geocoded location. This models the realistic assumption that a photo taken shortly after a known location is likely still at that location.
+2.  **Backward Pass**: Similarly, the backend walks backward to propagate location context from later Anchors to earlier photos that precede them.
+3.  **Visual Affinity Tie-Breaking**: When a Bare photo (Class B, no metadata at all) sits between two Anchors with *different* locations, the system computes the **CLIP cosine similarity** between the Bare photo and each candidate Anchor. The Bare photo inherits the location of the Anchor with the highest visual similarity.
+
+#### Step 2.4: Contextual Description Generation (VLM — Triple Context Window)
+For each photo (regardless of class), the backend generates a descriptive tag using the local VLM with the **sliding triple-context window**, now enriched by the propagated Anchor context:
+
+* To analyze the current image N, the Python backend passes to the local Vision-Language Model (VLM, e.g., `Moondream2` or `Qwen2-VL-2B` loaded via `transformers`):
+    * The **Current Image N**.
+    * The **Previous Image N-1** coupled with its **already generated description** (if N > 1).
+    * The **Next Image N+1** as pure visual context (if N < total number of photos).
+    * The **Tour Name** provided by the user.
+    * The **Inherited Location** (from Anchor propagation or direct GPS geocoding).
+* The prompt instructs the model to recognize logical continuity, use the location context, and leverage the tour title:
+  > *"The user is currently on a tour titled: **[Tour Name]**. The estimated location is: **[Location]**. I am showing you the current image (Photo B), embedded within this chronological sequence. I am also providing the previous photo (Photo A), described as '[Description A]', and the next photo (Photo C). Describe what Photo B depicts, taking into account the tour context '[Tour Name]', the location '[Location]', and the adjacent photos. If Photo B shows a close-up detail of a subject visible in Photo A or leading up to Photo C, explicitly state this in the description (e.g., 'This is a close-up detail of the left column of the church portico we just saw...')."*
+* **Wikipedia Keyword Search Tool (Optional, Online-Only)**: If the **`Enable Online Services`** toggle is active in Settings, the VLM is granted access to a **Wikipedia search tool**. The model can invoke this tool autonomously when it detects that an image contains a specific monument, artwork, architectural element, or landmark that requires further factual context to generate an accurate description. The tool workflow is:
+    1. The VLM extracts one or more **keywords** from its visual analysis of the image (e.g., *"Brunelleschi's Dome"*, *"Botticelli Primavera"*, *"Cappella Sistina"*).
+    2. The backend queries the Wikipedia REST API (`/api/rest_v1/page/summary/{keyword}`) and returns the summary extract to the VLM.
+    3. The VLM integrates the retrieved factual information into its final description of the photo, ensuring historically and culturally accurate tags.
+    
+    When the online toggle is OFF, this tool is disabled — the VLM relies solely on its pre-trained visual knowledge and the provided Tour Name/Location context.
+
+### Phase 3: Hybrid Clustering & Storyboard Generation
+The backend organizes the sorted sequence of photos into logical **Sections/Scenes** using a **Hybrid Clustering** strategy. Because real-world photo collections have varying levels of metadata completeness, the system applies the most appropriate clustering algorithm on a per-photo basis, falling back gracefully when GPS or timestamps are unavailable.
+
+#### Clustering Strategy Hierarchy
+
+The backend attempts each strategy in priority order per adjacent photo pair. The first strategy with sufficient data for both photos is used:
+
+| Priority | Strategy | Requirements | Method |
+|----------|----------|-------------|--------|
+| **1** | **Space-Time Clustering** | Both photos have GPS + Timestamp | ~100m radius, ~15 min sliding window |
+| **2** | **Time + Visual Clustering** | Both photos have Timestamp (no GPS) | Temporal window + CLIP cosine similarity |
+| **3** | **Semantic Change Detection** | No GPS, no Timestamp (Bare photos) | CLIP cosine similarity drops between adjacent photos |
+
+#### Strategy 1: Space-Time Clustering (GPS + Timestamp)
+The ideal clustering method. Two adjacent photos are grouped into the same section if:
+- Their capture times are within **15 minutes** of each other.
+- Their GPS coordinates are within **~100 meters** of each other (using the Haversine formula).
+
+A new section is created when either the temporal gap exceeds the threshold or the spatial distance indicates a significant location change.
+
+#### Strategy 2: Time + Visual Clustering (Timestamp Only, No GPS)
+When photos have timestamps but lack GPS coordinates, the system combines temporal proximity with CLIP visual similarity:
+- Two adjacent photos are grouped if their time delta is within **30 minutes**.
+- If the time delta is borderline (between 15–120 minutes), a **CLIP cosine similarity check** acts as a tie-breaker: photos with high visual similarity (> 0.7) are kept together even with a longer temporal gap (e.g., interior shots of the same museum spread over time), while visually dissimilar photos trigger a section break.
+
+#### Strategy 3: Semantic Change Detection (No GPS, No Timestamp — Bare Photos)
+When photos have neither GPS nor reliable timestamps, clustering relies purely on visual semantics. The system computes CLIP embeddings for all adjacent photo pairs and detects **Semantic Change Points** — positions where the cosine similarity drops sharply, indicating a likely scene/chapter transition.
+
+The algorithm:
+1. Computes the CLIP cosine similarity for every adjacent pair $(i, i+1)$.
+2. Identifies **local minima** in the similarity curve where $\text{sim}(i, i+1) < \mu - k \cdot \sigma$ (i.e., similarity falls significantly below the rolling mean).
+3. Places section boundaries at these detected change points.
+
+#### Unified Hybrid Clustering Entry Point
+The top-level clustering function traverses the sorted photo sequence and automatically selects the best strategy based on the available metadata:
+- If more than 50% of photos have GPS coordinates → **Space-Time Clustering** (Strategy 1).
+- If more than 50% have timestamps (but not GPS) → **Time + Visual Clustering** (Strategy 2).
+- Otherwise → **Semantic Change Detection** (Strategy 3).
+
+> **Plug & Play Philosophy**: This hybrid approach embodies the core design principle of TripTour — the user simply loads their photos, and the system automatically does the best possible job. The Storyboard Editor (Phase 4) then becomes a pleasant refining experience rather than a forced correction step.
+
+#### Section Metadata Generation
+After clustering, each section is automatically enriched:
+1.  A **section title** is synthesized from the most frequent tags and the dominant location (e.g., "Monumental Entrance — Piazza del Duomo").
+2.  A **preliminary auto-description** is generated by merging the contextualized descriptions of the section's constituent photos.
+3.  Photos without inherited coordinates are flagged in the UI (red highlight) for manual correction in Phase 4.
 
 ### Phase 4: Storyboard Editor (User Interface)
 The Svelte frontend receives the storyboard structure from the backend and displays an interactive UI:
 * Photos are visually grouped into the calculated sections/stages.
-* **GPS / Location Error Management**: Photos lacking coordinates are highlighted in red. The user can manually type a location for the stage or drag and drop photos into an existing stage.
-* **Full Interactivity**: Users can drag photos to reorder them across sections, create new empty sections, rename them, delete unwanted shots, or manually edit descriptions.
+* **Anchor & Metadata Transparency**: Each photo displays a small badge indicating its classification (🟢 Anchor / 🟡 Time-Only / 🔴 Bare) and the sort source used in Phase 0 (EXIF, filename regex, filesystem, or import order). This lets users instantly understand which photos have reliable metadata and which were positioned heuristically.
+* **GPS / Location Error Management**: Photos lacking coordinates (Bare and Time-Only classes with unresolved inherited locations) are highlighted in red. The user can manually type a location for the stage or drag and drop photos into an existing stage.
+* **Full Interactivity**: Users can drag photos to reorder them across sections, create new empty sections, rename them, delete unwanted shots, or manually edit descriptions and inherited locations.
 * **Bulk Editing**: Ability to select multiple photos at once to assign them the same location or tags in a single click.
-* **Recalculate**: A button allows users to re-run Phase 3 if they want to reset automatic grouping after making manual adjustments to order or metadata.
+* **Recalculate**: A button allows users to re-run Phase 3 (Hybrid Clustering) if they want to reset automatic grouping after making manual adjustments to order or metadata.
 
 ### Phase 5: Local Narrative Synthesis and Temporal Tagging
 Once the user confirms the edited storyboard:
@@ -130,54 +201,11 @@ To run both the vision model and the text LLM on consumer-grade computers (e.g.,
 
 ### Memory Optimization and Offloading
 During the app flow, we never keep both models in RAM/VRAM simultaneously to prevent system memory saturation:
-1.  **Phase 1 (Deduplication)**: Load CLIP -> Extract Embeddings -> Offload CLIP.
-2.  **Phase 2 (Enrichment)**: Load VLM (Moondream/Qwen) -> Analyze Photos with Triple Window -> Offload VLM.
-3.  **Phase 5 (Narrative Synthesis)**: Load LLM (Llama-3-8B or Qwen-2.5-3B) -> Generate Script -> Offload LLM.
-
-### Conceptual Load Code with 4-bit Quantization
-```python
-import gc
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-class LocalAIEngine:
-    def __init__(self):
-        self.model = None
-        self.tokenizer = None
-        
-        # 4-bit quantization configuration for RAM/VRAM savings
-        self.bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16
-        )
-
-    def load_text_llm(self, model_id="Qwen/Qwen2.5-3B-Instruct"):
-        """Loads the text LLM for Phase 5."""
-        self.free_memory()
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            quantization_config=self.bnb_config,
-            device_map="auto"
-        )
-
-    def free_memory(self):
-        """Frees RAM/VRAM by deleting unused models and tokenizers."""
-        if self.model is not None:
-            del self.model
-            self.model = None
-        if self.tokenizer is not None:
-            del self.tokenizer
-            self.tokenizer = None
-        
-        # Force Python garbage collection and empty PyTorch cache
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-```
+1.  **Phase 0 (Sorting)**: No AI models loaded — pure metadata extraction and filesystem operations.
+2.  **Phase 1 (Deduplication)**: Load CLIP -> Extract Embeddings -> **Persist embeddings to DB** -> Offload CLIP.
+3.  **Phase 2 (Enrichment)**: Load VLM (Moondream/Qwen) -> Anchor classification & propagation (reusing persisted CLIP embeddings) -> Contextual description generation with Triple Window -> Offload VLM.
+4.  **Phase 3 (Clustering)**: No additional AI model needed — reuses persisted CLIP embeddings from Phase 1 for Time+Visual and Semantic Change Detection strategies.
+5.  **Phase 5 (Narrative Synthesis)**: Load LLM (Llama-3-8B or Qwen-2.5-3B) -> Generate Script -> Offload LLM.
 
 ---
 
@@ -190,31 +218,6 @@ The Python backend calculates the appropriate path at application startup. Stand
 * **Windows**: `%APPDATA%/TripTour/triptour.db`
 * **macOS**: `~/Library/Application Support/TripTour/triptour.db`
 * **Linux**: `~/.local/share/triptour/triptour.db`
-
-```python
-import os
-import sys
-
-def get_db_path() -> str:
-    """Returns the absolute, persistent path for the SQLite database."""
-    app_name = "TripTour"
-    
-    if sys.platform == "win32":
-        # Windows: AppData/Roaming
-        base_dir = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
-    elif sys.platform == "darwin":
-        # macOS: Library/Application Support
-        base_dir = os.path.expanduser("~/Library/Application Support")
-    else:
-        # Linux and other Unix-likes: .local/share (XDG)
-        base_dir = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    
-    # Create application directory if it doesn't exist
-    app_dir = os.path.join(base_dir, app_name)
-    os.makedirs(app_dir, exist_ok=True)
-    
-    return os.path.join(app_dir, "triptour.db")
-```
 
 ### Local Database Schema
 
@@ -234,8 +237,19 @@ CREATE TABLE media (
     original_path TEXT NOT NULL,  -- Original path on disk
     cached_path TEXT NOT NULL,    -- Path to the optimized image in application cache
     taken_at TIMESTAMP,           -- Capture timestamp (EXIF or fallback)
-    latitude REAL,                -- Latitude (EXIF)
-    longitude REAL,               -- Longitude (EXIF)
+    sort_source TEXT,             -- Source of the timestamp (Phase 0): 'EXIF DateTimeOriginal' | 'Filename Regex' | 'Filesystem mtime' | 'Import Order Fallback'
+    sort_priority INTEGER,        -- Numeric priority of the sort source (1-4), for transparency in the UI
+    latitude REAL,                -- Latitude (EXIF) — only for Anchor-class photos
+    longitude REAL,               -- Longitude (EXIF) — only for Anchor-class photos
+    location_name TEXT,           -- Human-readable place name from offline reverse geocoding (Phase 2 Tier 1)
+    location_city TEXT,           -- City name
+    location_region TEXT,         -- Region/State name
+    location_country TEXT,        -- Country code (ISO 3166-1 alpha-2)
+    wikipedia_summary TEXT,       -- Optional Wikipedia summary (Phase 2 Tier 2, NULL if offline or lookup failed)
+    inherited_location TEXT,      -- JSON: location propagated from nearest Anchor (Phase 2.3), NULL for Anchors themselves
+    anchor_source TEXT,           -- Propagation direction: 'forward' | 'backward' | 'clip_tie_break' | NULL (for Anchor photos or unassigned)
+    anchor_class TEXT,            -- Photo class (Phase 2.1): 'A' (Anchor) | 'T' (Time-Only) | 'B' (Bare)
+    embedding BLOB,               -- CLIP embedding vector (binary, stored for Phase 1 dedup & Phase 3 clustering reuse)
     local_tags TEXT,              -- JSON tags extracted by local VLM (Phase 2)
     local_description TEXT,       -- Contextualized description of the photo (Phase 2)
     display_order INTEGER,        -- Calculated or manual order of display
