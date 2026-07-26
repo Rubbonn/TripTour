@@ -1,7 +1,9 @@
-from pathlib import Path
-from PIL import Image as PILImage, ExifTags
+from app.models.embedders import get_image_embedder
 from datetime import datetime
+from pathlib import Path
+from PIL import Image as PILImage, ExifTags, ImageFilter
 import re
+from typing import cast
 
 class Image:
 	def __init__(self, path: str):
@@ -13,9 +15,12 @@ class Image:
 		self.path = str(path_obj)
 		self.filename = path_obj.name
 		self.gps_coordinates: tuple[float, float] | None = self._extract_gps_coordinates_from_exif()
-		
-
-		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename()
+		self.address: str | None = None
+		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename() or self._extract_date_from_system()
+		image_embedder = get_image_embedder()
+		self.embedding = image_embedder.embed(self.path)
+		self.description: str | None = None
+		self.laplacian_variance: float = self._calc_laplacian_variance()
 
 	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
 		pil_image = PILImage.open(self.path)
@@ -78,5 +83,38 @@ class Image:
 				return datetime(year, month, day, hour, minute, second)
 		return None
 
+	def _extract_date_from_system(self) -> datetime | None:
+		stats = Path(self.path).stat()
+		date = datetime.fromtimestamp(stats.st_birthtime if hasattr(stats, 'st_birthtime') else stats.st_ctime)
+		return date
+
+	def _calc_laplacian_variance(self) -> float:
+		pil_image = PILImage.open(self.path)
+		gray_image = pil_image.convert('L')
+		gray_image.thumbnail((1024, 1024), PILImage.Resampling.BILINEAR)
+		gray_image = gray_image.filter(ImageFilter.GaussianBlur(radius=0.5))
+		w, h = gray_image.size
+		if w < 3 or h < 3:
+			return 0.0
+
+		px = cast(dict[tuple[int, int], float], gray_image.load())
+		lap_values = []
+		step = 1
+		for y in range(1, h - 1, step):
+			for x in range(1, w - 1, step):
+				c = px[x, y]
+				lap = (
+					px[x - 1, y] + px[x + 1, y] +
+					px[x, y - 1] + px[x, y + 1] -
+					4 * c
+				)
+				lap_values.append(float(lap))
+		if not lap_values:
+			return 0.0
+
+		mean = sum(lap_values) / len(lap_values)
+		var = sum((v - mean) ** 2 for v in lap_values) / len(lap_values)
+		return float(var)
+	
 	def __str__(self):
-		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, date={self.date})"
+		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"

@@ -1,8 +1,6 @@
-from app.image import Image
+from app.models.vlm import Vlm
 
-img1 = Image('1036.jpeg')
-img2 = Image('IMG_20260715_104924.jpg')
-img3 = Image('IMG-20251124-WA0005.jpg')
-print(img1)
-print(img2)
-print(img3)
+vlm = Vlm()
+vlm([
+	{'role': 'user', 'content': 'Ciao come stai?'}
+])
