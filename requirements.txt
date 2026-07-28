@@ -1,4 +1,6 @@
 accelerate
 bitsandbytes
+httpx
+markitdown
 Pillow
 transformers

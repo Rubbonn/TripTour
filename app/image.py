@@ -1,5 +1,6 @@
 from app.models.embedders import get_image_embedder
 from datetime import datetime
+from functools import cached_property
 from pathlib import Path
 from PIL import Image as PILImage, ExifTags, ImageFilter
 import re
@@ -17,10 +18,13 @@ class Image:
 		self.gps_coordinates: tuple[float, float] | None = self._extract_gps_coordinates_from_exif()
 		self.address: str | None = None
 		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename() or self._extract_date_from_system()
-		image_embedder = get_image_embedder()
-		self.embedding = image_embedder.embed(self.path)
 		self.description: str | None = None
 		self.laplacian_variance: float = self._calc_laplacian_variance()
+
+	@cached_property
+	def embedding(self) -> list[float]:
+		image_embedder = get_image_embedder()
+		return image_embedder.embed(self.path)
 
 	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
 		pil_image = PILImage.open(self.path)
