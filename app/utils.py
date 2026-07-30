@@ -41,5 +41,17 @@ class WikipediaSearch:
 
 	@classmethod
 	def searchByKeyword(cls, keyword: str) -> dict[str, str]:
-		# TODO: Implement search by keyword using Wikipedia API
-		pass
+		with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+			response = client.get(cls._base_url, params={
+				'format': 'json',
+				'action': 'query',
+				'list': 'search',
+				'srsearch': keyword,
+				'srenablerewrites': '1',
+				'srlimit': 3
+			}).json()
+			if len(response['query']['search']) == 0:
+				return {}
+
+			results = {article['title']: cls.htmlToMarkdown(cls.getHtmlByPageid(article['pageid'])) for article in response['query']['search']}
+			return results

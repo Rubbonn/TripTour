@@ -1,4 +1,6 @@
+from json import dumps
 from transformers import pipeline
+from typing import Callable
 
 class Vlm:
 	def __init__(self):
@@ -11,6 +13,22 @@ class Vlm:
 		)
 		self._pipeline.generation_config.update(max_new_tokens = 32768)
 
-	def __call__(self, chat_history: str | list[str] | list[dict] | None) -> str:
-		response = self._pipeline(text=chat_history, enable_thinking=False) #type: ignore[call-overload]
-		return response[0]['generated_text'][-1]['content']
+	def __call__(self, chat_history: list[dict] | None, tools: list[Callable] = []) -> str:
+		tool_list = [tool.__name__ for tool in tools]
+		while True:
+			print(f'Chat history: {chat_history}')
+			chat_history = self._pipeline(text=chat_history, enable_thinking=False, tools=tools)[0]['generated_text'] #type: ignore[call-overload]
+			print(f'Received: {chat_history[-1]}')
+			if 'tool_calls' in chat_history[-1]:
+				chat_history[-1]['content'] = ''
+				for tool in chat_history[-1]['tool_calls']:
+					tool_name = tool['function']['name']
+					tool_args = tool['function']['arguments']
+					if tool_name in tool_list:
+						print(f'Calling tool {tool_name} with args {tool_args}')
+						tool_result = tools[tool_list.index(tool_name)](**tool_args)
+						tool_response = {'role': 'tool', 'content': dumps(tool_result)}
+						print(f'Got tool response: {tool_response}')
+						chat_history.append(tool_response)
+			else:
+				return chat_history[-1]['content']
