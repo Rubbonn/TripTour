@@ -13,7 +13,7 @@ class Vlm:
 		)
 		self._pipeline.generation_config.update(max_new_tokens = 32768)
 
-	def __call__(self, chat_history: list[dict] | None, tools: list[Callable] = []) -> str:
+	def __call__(self, chat_history: list[dict], tools: list[Callable] = []) -> str:
 		tool_list = [tool.__name__ for tool in tools]
 		while True:
 			print(f'Chat history: {chat_history}')

@@ -1,4 +1,5 @@
 from app.models.embedders import get_image_embedder
+from app.utils import reverse_geocode
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
@@ -16,7 +17,7 @@ class Image:
 		self.path = str(path_obj)
 		self.filename = path_obj.name
 		self.gps_coordinates: tuple[float, float] | None = self._extract_gps_coordinates_from_exif()
-		self.address: str | None = None
+		self.address: str | None = self._reverse_geocode()
 		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename() or self._extract_date_from_system()
 		self.description: str | None = None
 		self.laplacian_variance: float = self._calc_laplacian_variance()
@@ -119,6 +120,15 @@ class Image:
 		mean = sum(lap_values) / len(lap_values)
 		var = sum((v - mean) ** 2 for v in lap_values) / len(lap_values)
 		return float(var)
+
+	def _reverse_geocode(self) -> str | None:
+		if self.gps_coordinates:
+			try:
+				return reverse_geocode(self.gps_coordinates[0], self.gps_coordinates[1])
+			except ValueError as e:
+				print(f"Reverse geocoding failed for {self.filename}: {e}")
+
+		return None
 	
 	def __str__(self):
 		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"

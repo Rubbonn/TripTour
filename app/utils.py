@@ -55,3 +55,19 @@ class WikipediaSearch:
 
 			results = {article['title']: cls.htmlToMarkdown(cls.getHtmlByPageid(article['pageid'])) for article in response['query']['search']}
 			return results
+
+def reverse_geocode(lat: float, lon: float) -> str:
+	with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+		response = client.get('https://nominatim.openstreetmap.org/reverse', params={
+			'format': 'json',
+			'lat': lat,
+			'lon': lon,
+			'zoom': 18,
+			'addressdetails': 1,
+			'extratags': 1,
+			'layer': 'poi'
+		}).json()
+		if 'error' in response:
+			raise ValueError(f"Reverse geocoding failed: {response['error']}")
+		
+		return response['display_name']
