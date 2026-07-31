@@ -7,6 +7,7 @@ class Vlm:
 		self._pipeline = pipeline(
 			'image-text-to-text',
 			model='google/gemma-4-E2B-it',
+			assistant_model='google/gemma-4-E2B-it-assistant',
 			dtype='auto',
 			device_map='auto',
 			model_kwargs={'cache_dir': './.model_cache', 'attn_implementation': 'sdpa'}
