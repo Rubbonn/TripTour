@@ -1,5 +1,6 @@
 import httpx
 import re
+from typing import Any
 
 class WikipediaSearch:
 	_base_url = 'https://wikipedia.org/w/api.php'
@@ -34,6 +35,7 @@ class WikipediaSearch:
 			"Bibliography",
 			"External links",
 			"Sources",
+			"Sources and external links",
 			"Other projects"
 		]
 
@@ -55,9 +57,11 @@ class WikipediaSearch:
 			response = client.get(cls._base_url, params={
 				'format': 'json',
 				'action': 'query',
+				'prop': '',
 				'list': 'geosearch',
 				'gscoord': f'{lat}|{lon}',
-				'gslimit': 1
+				'gslimit': 3,
+				'gsprop': ''
 			}).json()
 			if len(response['query']['geosearch']) == 0:
 				return {}
@@ -67,20 +71,26 @@ class WikipediaSearch:
 
 	@classmethod
 	def search_by_keyword(cls, keyword: str) -> dict[str, str]:
-		with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
-			response = client.get(cls._base_url, params={
-				'format': 'json',
-				'action': 'query',
-				'list': 'search',
-				'srsearch': keyword,
-				'srenablerewrites': '1',
-				'srlimit': 3
-			}).json()
-			if len(response['query']['search']) == 0:
-				return {}
+		try:
+			with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+				response = client.get(cls._base_url, params={
+					'format': 'json',
+					'action': 'query',
+					'prop': '',
+					'list': 'search',
+					'srsearch': keyword,
+					'srenablerewrites': '1',
+					'srlimit': 3,
+					'srprop': ''
+				}).raise_for_status().json()
+				if len(response['query']['search']) == 0:
+					return {}
 
-			results = {article['title']: cls.clear_unused_sections(cls.html_to_markdown(cls.get_html_by_pageid(article['pageid']))) for article in response['query']['search']}
-			return results
+				results = {article['title']: cls.clear_unused_sections(cls.html_to_markdown(cls.get_html_by_pageid(article['pageid']))) for article in response['query']['search']}
+				return results
+		except httpx.HTTPStatusError as e:
+			print(f'Error while searching by keyword: {e}')
+			raise Exception(f'Error while searching by keyword: {e}')
 
 def reverse_geocode(lat: float, lon: float) -> str:
 	with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
@@ -97,3 +107,14 @@ def reverse_geocode(lat: float, lon: float) -> str:
 			raise ValueError(f"Reverse geocoding failed: {response['error']}")
 		
 		return response['display_name']
+
+def truncate(value: Any, max_length: int = 100) -> Any:
+	# Tronca ricorsivamente le stringhe dentro dizionari e liste, per print di debug leggibili
+	if isinstance(value, dict):
+		return {key: truncate(item, max_length) for key, item in value.items()}
+	if isinstance(value, (list, tuple)):
+		return type(value)(truncate(item, max_length) for item in value)
+	if isinstance(value, str) and len(value) > max_length:
+		return value[:max_length] + '...'
+
+	return value
