@@ -8,7 +8,7 @@ img1 = Image('IMG_20260715_122913.jpg')
 img2 = Image('IMG_20260715_112410.jpg')
 img3 = Image('IMG_20260715_104924.jpg')
 
-#articles = WikipediaSearch.searchByCoordinates(img1.gps_coordinates[0], img1.gps_coordinates[1])
+#articles = WikipediaSearch.search_by_keyword('bronze angel statue')
 vlm = Vlm()
 vlm([{'role': 'user', 'content': [
 	{'type': 'image', 'image': img1.path},

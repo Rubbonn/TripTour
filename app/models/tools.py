@@ -10,4 +10,4 @@ def wikipedia_search_keyword(keyword: str) -> dict[str, str]:
 	Returns:
 		A list of articles indexed by their titles
 	"""
-	return WikipediaSearch.searchByKeyword(keyword)
+	return WikipediaSearch.search_by_keyword(keyword)
