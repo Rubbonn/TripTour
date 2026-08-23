@@ -1,8 +1,11 @@
-# Technical Specifications Document (V7): TripTour
+# Technical Specifications Document (V8): TripTour
 
-This document outlines the development specifications for **TripTour**, a *100% offline, private, and local* desktop application that transforms unstructured collections of photos into narrated virtual tours. The application utilizes a user interface developed in **Svelte (SPA)** hosted inside a **PySide6 (Qt)** container, communicating via a bidirectional IPC bridge (`QWebChannel`). 
+This document outlines the development specifications for **TripTour**, a desktop application that transforms unstructured collections of photos into narrated virtual tours. The application utilizes a user interface developed in **Svelte (SPA)** hosted inside a **PySide6 (Qt)** container, communicating via a bidirectional IPC bridge (`QWebChannel`).
 
-All intelligent processing — duplicate filtering, sequential visual tagging, clustering, and final narrative synthesis — runs entirely locally on the user's machine using the Python **Hugging Face `transformers`** library with aggressive memory optimizations.
+TripTour uses a **hybrid AI architecture**:
+- **Local Transformers** are used only for image embeddings (deduplication and clustering support).
+- **LangChain/LangGraph + OpenAI-compatible APIs** are used for multimodal enrichment and final narrative synthesis.
+- The user configures endpoint URL, API key, and model choices (vision model + text model) at first launch and later in Settings.
 
 ---
 
@@ -32,35 +35,49 @@ The application combines the performance of a native Python backend with the int
 ## 2. User Flow & Detailed Processing Pipeline
 
 ```
-[ Homepage ] ──► [ Load Previous Tour ]
-     │
-     └──► [ New Tour ]
-              │
-              ├──► Select files/folders, Language, and Tour Name (PySide6 Dialog & Svelte)
-              │
-              ├──► PHASE 0: Multi-Level Sorting (EXIF → Regex → mtime → Import Order)
-              │
-              ├──► PHASE 1: Filtering and De-duplication (CLIP + Laplacian)
-              │
-              ├──► PHASE 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + VLM)
-              │
-              ├──► PHASE 3: Hybrid Clustering (Space-Time / Time+Visual / Semantic Change Detection)
-              │
-              ├──► PHASE 4: Storyboard Editor (Svelte UI - Manual Edits)
-              │
-              ├──► PHASE 5: Script Generation (Local LLM + Tour Name + Inline Tags)
-              │
-              └──► [ HTML Player & Package Export ]
+[ App Start ]
+    │
+    ├──► [ AI Setup Required? ] -- yes --> [ First-Run AI Setup ]
+    │                                         (Base URL + API Key + Model Selection)
+    │
+    └──► no / completed
+            │
+            └──► [ Homepage ] ──► [ Load Previous Tour ]
+                      │
+                      └──► [ New Tour ]
+                              │
+                              ├──► Select files/folders, Language, and Tour Name (PySide6 Dialog & Svelte)
+                              │
+                              ├──► PHASE 0: Multi-Level Sorting (EXIF → Regex → mtime → Import Order)
+                              │
+                              ├──► PHASE 1: Filtering and De-duplication (CLIP + Laplacian)
+                              │
+                              ├──► PHASE 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + Remote Vision Model)
+                              │
+                              ├──► PHASE 3: Hybrid Clustering (Space-Time / Time+Visual / Semantic Change Detection)
+                              │
+                              ├──► PHASE 4: Storyboard Editor (Svelte UI - Manual Edits)
+                              │
+                              ├──► PHASE 5: Script Generation (Remote Text Model + Tour Name + Inline Tags)
+                              │
+                              └──► [ HTML Player & Package Export ]
 ```
 
 ### Phase 0: Startup, Initialization, and Multi-Level Sorting (Sanitization)
-1.  **Homepage**: The user can resume a previously saved tour from the local SQLite database or start a new one.
-2.  **First-Launch Model Download**: On the very first run, **an internet connection is required** to download the AI models (CLIP, VLM, and LLM) from Hugging Face Hub. The application presents a one-time setup screen showing download progress for each model. Once downloaded, the models are cached locally under the TripTour application data directory, and all subsequent runs are fully offline. If models are already present (e.g., from a previous installation), this step is skipped automatically.
-3.  **Initialization & Selection**:
+1.  **Pre-Homepage Configuration Gate**: At startup, before the homepage is shown and before the user can load/start any tour, TripTour checks whether AI configuration exists.
+2.  **First-Launch AI Configuration Wizard**: On first run (or whenever config is missing), TripTour opens a required setup flow where the user provides:
+    * **Base URL** of an OpenAI-compatible endpoint (examples: OpenAI, OpenRouter, local vLLM, Ollama-compatible gateway).
+    * **API Key** (or equivalent token) for the selected endpoint.
+    * **Enrichment Model** (must support image input / vision).
+    * **Narrative Model** (text model for final tour generation).
+    
+    Configuration is validated with a lightweight test call and then persisted locally using **PySide6 QSettings**. The same settings can be changed later from a dedicated **Settings > AI Providers** section.
+3.  **Homepage**: After configuration is valid, the user can resume a previously saved tour from the local SQLite database or start a new one.
+4.  **Initialization & Selection**:
     * The user selects files or a folder using native PySide6 dialogs (`QFileDialog`). Imported photos may be in a completely unstructured order.
     * The user selects the language for the tour.
     * **Tour Name (New)**: The user inputs a descriptive title for the tour (e.g., *"Vatican Museums Visit"* or *"Tuscany Holidays 2026"*). This name is stored in the database and **becomes a crucial piece of metadata** passed to the AI models in subsequent stages to guide their understanding of historical, geographical, and artistic contexts.
-4.  **Multi-Level Sorting Strategy**: Before any analysis is performed, the backend applies a cascading sanitization pipeline to establish the best possible chronological order. Each photo is timestamped using the first available source in the following priority chain:
+5.  **Multi-Level Sorting Strategy**: Before any analysis is performed, the backend applies a cascading sanitization pipeline to establish the best possible chronological order. Each photo is timestamped using the first available source in the following priority chain:
 
     | Priority | Source | Description |
     |----------|--------|-------------|
@@ -80,7 +97,7 @@ Using the newly sorted sequence, to prevent visual redundancy (such as multiple 
     * The **Laplacian variance** is calculated for each photo to measure its sharpness (blurriness).
     * The sharpest photo (highest variance) is retained; the others are removed from the active tour sequence or hidden.
 
-### Phase 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + VLM)
+### Phase 2: Anchor-Based Enrichment (Anchor Points + Context Propagation + Vision Model)
 The enrichment phase follows an **Anchor-Based** strategy: photos with complete metadata (GPS + timestamp) serve as **Anchor Points**, and their contextual information is propagated forward and backward to neighboring photos that lack metadata. This ensures maximum coverage even when GPS or timestamps are partial or absent.
 
 #### Step 2.1: Classification and Anchor Identification
@@ -95,12 +112,7 @@ Each photo in the sorted sequence is classified based on its metadata completene
 #### Step 2.2: EXIF Extraction & Reverse Geocoding (Anchors Only)
 For **Anchor photos only**, the backend performs full metadata extraction:
 1.  **EXIF Metadata**: Extraction of GPS coordinates (`GPSLatitude`, `GPSLongitude`, `GPSLatitudeRef`, `GPSLongitudeRef`).
-2.  **Reverse Geocoding — Offline-First with Optional Online Enrichment**: TripTour provides a **Settings toggle** (`Enable Online Services`) that controls whether online APIs are used. The toggle is **off by default**, respecting the offline-first philosophy.
-    * **Tier 1 — Local Reverse Geocoding (always active)**: A bundled offline geocoding library (library still to be selected — candidates include a local GeoNames-based SQLite gazetteer or `reverse_geocoder`) converts GPS coordinates into a human-readable place name (city, region, country). This runs fully offline with zero network dependency.
-    * **Tier 2 — Online Enrichment (only when toggle is ON)**:
-        * **OpenStreetMap (Nominatim)**: Performs high-accuracy reverse geocoding via `https://nominatim.openstreetmap.org/reverse`, enriching the location with detailed address data, points of interest, and boundary information.
-        * **Wikipedia API**: Queries the Wikipedia REST API (`/api/rest_v1/page/summary/{place_name}`) to fetch a brief cultural/historical summary paragraph about the geocoded location. This summary is stored in the `wikipedia_summary` field and passed to the LLM in Phase 5 for richer narrative generation.
-    * **Offline Fallback**: When the toggle is OFF or no internet connection is available, the cultural enrichment is delegated entirely to the **pre-trained knowledge of the local LLM (Phase 5)**, which receives the Tour Name and the offline-geocoded place name as context.
+2.  **Reverse Geocoding (Nominatim)**: Coordinates are converted into human-readable location data (city, region, country) using OpenStreetMap Nominatim (`https://nominatim.openstreetmap.org/reverse`). No fallback provider is defined in this version.
 
 #### Step 2.3: Context Propagation (Forward & Backward)
 Once Anchors are identified and enriched, context is propagated to non-anchor photos:
@@ -109,23 +121,19 @@ Once Anchors are identified and enriched, context is propagated to non-anchor ph
 2.  **Backward Pass**: Similarly, the backend walks backward to propagate location context from later Anchors to earlier photos that precede them.
 3.  **Visual Affinity Tie-Breaking**: When a Bare photo (Class B, no metadata at all) sits between two Anchors with *different* locations, the system computes the **CLIP cosine similarity** between the Bare photo and each candidate Anchor. The Bare photo inherits the location of the Anchor with the highest visual similarity.
 
-#### Step 2.4: Contextual Description Generation (VLM — Triple Context Window)
-For each photo (regardless of class), the backend generates a descriptive tag using the local VLM with the **sliding triple-context window**, now enriched by the propagated Anchor context:
+#### Step 2.4: Contextual Description Generation (LangChain/LangGraph + Vision Model)
+For each photo (regardless of class), the backend generates a descriptive tag using the configured **remote multimodal model** with the **sliding triple-context window**, now enriched by the propagated Anchor context.
 
-* To analyze the current image N, the Python backend passes to the local Vision-Language Model (VLM, e.g., `Moondream2` or `Qwen2-VL-2B` loaded via `transformers`):
+* To analyze the current image N, the Python backend builds a LangChain/LangGraph call to the configured OpenAI-compatible chat-completions endpoint, passing:
     * The **Current Image N**.
     * The **Previous Image N-1** coupled with its **already generated description** (if N > 1).
     * The **Next Image N+1** as pure visual context (if N < total number of photos).
     * The **Tour Name** provided by the user.
     * The **Inherited Location** (from Anchor propagation or direct GPS geocoding).
+* The selected enrichment model **must support images**. The setup wizard and Settings validation reject non-vision models for this role.
 * The prompt instructs the model to recognize logical continuity, use the location context, and leverage the tour title:
   > *"The user is currently on a tour titled: **[Tour Name]**. The estimated location is: **[Location]**. I am showing you the current image (Photo B), embedded within this chronological sequence. I am also providing the previous photo (Photo A), described as '[Description A]', and the next photo (Photo C). Describe what Photo B depicts, taking into account the tour context '[Tour Name]', the location '[Location]', and the adjacent photos. If Photo B shows a close-up detail of a subject visible in Photo A or leading up to Photo C, explicitly state this in the description (e.g., 'This is a close-up detail of the left column of the church portico we just saw...')."*
-* **Wikipedia Keyword Search Tool (Optional, Online-Only)**: If the **`Enable Online Services`** toggle is active in Settings, the VLM is granted access to a **Wikipedia search tool**. The model can invoke this tool autonomously when it detects that an image contains a specific monument, artwork, architectural element, or landmark that requires further factual context to generate an accurate description. The tool workflow is:
-    1. The VLM extracts one or more **keywords** from its visual analysis of the image (e.g., *"Brunelleschi's Dome"*, *"Botticelli Primavera"*, *"Cappella Sistina"*).
-    2. The backend queries the Wikipedia REST API (`/api/rest_v1/page/summary/{keyword}`) and returns the summary extract to the VLM.
-    3. The VLM integrates the retrieved factual information into its final description of the photo, ensuring historically and culturally accurate tags.
-    
-    When the online toggle is OFF, this tool is disabled — the VLM relies solely on its pre-trained visual knowledge and the provided Tour Name/Location context.
+* **Tool Usage Policy (LangGraph)**: tools are not toggled individually in settings. They are automatically available when execution conditions are met. Example: Wikipedia article/context retrieval is invoked only when internet connectivity is available, so the model receives broader factual context to interpret what it is seeing.
 
 ### Phase 3: Hybrid Clustering & Storyboard Generation
 The backend organizes the sorted sequence of photos into logical **Sections/Scenes** using a **Hybrid Clustering** strategy. Because real-world photo collections have varying levels of metadata completeness, the system applies the most appropriate clustering algorithm on a per-photo basis, falling back gracefully when GPS or timestamps are unavailable.
@@ -183,29 +191,39 @@ The Svelte frontend receives the storyboard structure from the backend and displ
 * **Bulk Editing**: Ability to select multiple photos at once to assign them the same location or tags in a single click.
 * **Recalculate**: A button allows users to re-run Phase 3 (Hybrid Clustering) if they want to reset automatic grouping after making manual adjustments to order or metadata.
 
-### Phase 5: Local Narrative Synthesis and Temporal Tagging
+### Phase 5: Narrative Synthesis and Temporal Tagging (LangChain/LangGraph)
 Once the user confirms the edited storyboard:
-1.  The Python backend unloads the Phase 2 local VLM from memory (if needed) and initializes a **local text-only LLM** (e.g., `meta-llama/Meta-Llama-3-8B-Instruct` or `Qwen/Qwen2.5-3B-Instruct` quantized to 4-bit) via `transformers`.
-2.  All storyboard information (locations, detailed and contextualized descriptions, chronological order) along with the **Tour Name** and **Target Language** are bundled and sent to the local LLM.
-3.  The LLM processes this structural text and the tour name (e.g., *"Rome Vacation 2026"*) and generates the final narrative script directly in the target language. This allows the model to draw historical or stylistic inferences thanks to the provided title.
-4.  **Synchronization**: The LLM embeds special inline tags into the text to indicate exactly when the interface should transition to the next photo.
+1.  The Python backend builds a generation pipeline with LangChain/LangGraph using the configured **narrative model** (text-focused).
+2.  All storyboard information (locations, detailed and contextualized descriptions, chronological order) along with the **Tour Name** and **Target Language** are bundled and sent to the endpoint selected by the user.
+3.  The model processes this structural text and the tour name (e.g., *"Rome Vacation 2026"*) and generates the final narrative script directly in the target language.
+4.  **Synchronization**: The model embeds special inline tags into the text to indicate exactly when the interface should transition to the next photo.
 
 * *Example of LLM output:*
     > `[photo_001.jpg] Welcome to Palazzo Vecchio, one of the iconic symbols of Florence. [photo_002.jpg] As we approach the main portal, the majestic copy of Michelangelo's David stands out. [photo_003.jpg] If we look closely at the carved stone details on the left...`
 
 ---
 
-## 3. AI Model Architecture & Memory Management (Transformers)
+## 3. AI Orchestration Architecture
 
-To run both the vision model and the text LLM on consumer-grade computers (e.g., a PC with 16GB RAM or a GPU with 6/8GB VRAM), the backend implements **lazy loading** and **4-bit quantization** using the `bitsandbytes` library.
+TripTour separates local vision indexing from model orchestration:
 
-### Memory Optimization and Offloading
-During the app flow, we never keep both models in RAM/VRAM simultaneously to prevent system memory saturation:
-1.  **Phase 0 (Sorting)**: No AI models loaded — pure metadata extraction and filesystem operations.
-2.  **Phase 1 (Deduplication)**: Load CLIP -> Extract Embeddings -> **Persist embeddings to DB** -> Offload CLIP.
-3.  **Phase 2 (Enrichment)**: Load VLM (Moondream/Qwen) -> Anchor classification & propagation (reusing persisted CLIP embeddings) -> Contextual description generation with Triple Window -> Offload VLM.
-4.  **Phase 3 (Clustering)**: No additional AI model needed — reuses persisted CLIP embeddings from Phase 1 for Time+Visual and Semantic Change Detection strategies.
-5.  **Phase 5 (Narrative Synthesis)**: Load LLM (Llama-3-8B or Qwen-2.5-3B) -> Generate Script -> Offload LLM.
+### 3.1 Local Embedding Layer (Transformers)
+Only embedding workloads run through local Hugging Face `transformers` models:
+1.  **Phase 1 (Deduplication)**: CLIP embeddings + Laplacian quality scoring.
+2.  **Phase 2.3 (Tie-Breaking)**: Reuse persisted CLIP embeddings for anchor disambiguation.
+3.  **Phase 3 (Clustering)**: Reuse persisted CLIP embeddings for Time+Visual and Semantic Change Detection.
+
+### 3.2 Remote Inference Layer (LangChain/LangGraph)
+All generative/model-orchestration tasks run through an OpenAI-compatible client abstraction:
+1.  **Multimodal Enrichment Model**: Used in Phase 2, must accept image inputs.
+2.  **Narrative Generation Model**: Used in Phase 5, optimized for long-form text output.
+3.  **Endpoint Agnosticism**: Any compatible endpoint can be configured (OpenAI, OpenRouter, self-hosted vLLM gateways, Ollama-compatible bridges, etc.).
+
+### 3.3 First-Run and Settings Lifecycle
+1.  If AI configuration is missing, startup is redirected to a mandatory setup screen.
+2.  The app stores endpoint URL, encrypted/obfuscated API credentials, and model identifiers via **PySide6 QSettings**.
+3.  A dedicated settings panel allows updating provider/model mappings at any time.
+4.  Validation rules enforce that the enrichment model is vision-capable.
 
 ---
 
@@ -241,16 +259,16 @@ CREATE TABLE media (
     sort_priority INTEGER,        -- Numeric priority of the sort source (1-4), for transparency in the UI
     latitude REAL,                -- Latitude (EXIF) — only for Anchor-class photos
     longitude REAL,               -- Longitude (EXIF) — only for Anchor-class photos
-    location_name TEXT,           -- Human-readable place name from offline reverse geocoding (Phase 2 Tier 1)
+    location_name TEXT,           -- Human-readable place name from configured reverse geocoding provider
     location_city TEXT,           -- City name
     location_region TEXT,         -- Region/State name
     location_country TEXT,        -- Country code (ISO 3166-1 alpha-2)
-    wikipedia_summary TEXT,       -- Optional Wikipedia summary (Phase 2 Tier 2, NULL if offline or lookup failed)
+    wikipedia_context TEXT,       -- Optional contextual content extracted from Wikipedia articles, nullable
     inherited_location TEXT,      -- JSON: location propagated from nearest Anchor (Phase 2.3), NULL for Anchors themselves
     anchor_source TEXT,           -- Propagation direction: 'forward' | 'backward' | 'clip_tie_break' | NULL (for Anchor photos or unassigned)
     anchor_class TEXT,            -- Photo class (Phase 2.1): 'A' (Anchor) | 'T' (Time-Only) | 'B' (Bare)
     embedding BLOB,               -- CLIP embedding vector (binary, stored for Phase 1 dedup & Phase 3 clustering reuse)
-    local_tags TEXT,              -- JSON tags extracted by local VLM (Phase 2)
+    local_tags TEXT,              -- JSON tags extracted by configured multimodal model (Phase 2)
     local_description TEXT,       -- Contextualized description of the photo (Phase 2)
     display_order INTEGER,        -- Calculated or manual order of display
     FOREIGN KEY(tour_id) REFERENCES tours(id) ON DELETE CASCADE
@@ -261,7 +279,7 @@ CREATE TABLE scenes (
     id TEXT PRIMARY KEY,
     tour_id TEXT NOT NULL,
     title TEXT NOT NULL,          -- Scene title (e.g. "The Main Altar")
-    narrative_text TEXT,          -- Final script text generated by the local LLM
+    narrative_text TEXT,          -- Final script text generated by the configured narrative model
     audio_path TEXT,              -- Path to pre-generated offline TTS audio (optional)
     display_order INTEGER,
     FOREIGN KEY(tour_id) REFERENCES tours(id) ON DELETE CASCADE
@@ -300,3 +318,11 @@ Upon completion, the tour is exported to a structured folder on the user's local
 1.  **Narrated Reading (TTS)**: Leverages the browser's native, free, and offline **Web Speech API** to read the active scene's text aloud in the user's chosen language.
 2.  **Synchronized Photo Transitions**: A lightweight JS parser scans the narrative text for tags like `[photo_001.jpg]`. As the Speech Synthesis engine advances through the spoken sentences, it triggers visual transitions to keep the active photo in perfect sync.
 3.  **Cinematic Transitions (Ken Burns Effect)**: Photos are displayed full-screen with smooth, CSS-driven pan and zoom animations, simulating a high-quality documentary. This maintains viewer engagement without sudden map jumps or coordinate discrepancies.
+
+---
+
+## 6. Connectivity and Compatibility Notes
+
+1.  TripTour is **not full offline by design** in this version because enrichment and narrative generation rely on a user-configured OpenAI-compatible endpoint.
+2.  Local-only deployments are still possible when the user points the app to a self-hosted/local endpoint (for example a local gateway around Ollama or vLLM).
+3.  The app is endpoint-agnostic: compatibility is based on OpenAI-style API behavior (chat/completions, multimodal support for enrichment model).
