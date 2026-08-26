@@ -1,5 +1,7 @@
 from app.utils import WikipediaSearch
+from langchain.tools import tool
 
+@tool
 def wikipedia_search_keyword(keyword: str) -> dict[str, str]:
 	"""
 	Search Wikipedia articles by keywords

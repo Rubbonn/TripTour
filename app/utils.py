@@ -14,7 +14,7 @@ class WikipediaSearch:
 				'pageid': pageid,
 				'prop': 'text',
 				'disableeditsection': ''
-			}).json()
+			}).raise_for_status().json()
 
 			return response['parse']['text']['*']
 
@@ -62,7 +62,7 @@ class WikipediaSearch:
 				'gscoord': f'{lat}|{lon}',
 				'gslimit': 3,
 				'gsprop': ''
-			}).json()
+			}).raise_for_status().json()
 			if len(response['query']['geosearch']) == 0:
 				return {}
 

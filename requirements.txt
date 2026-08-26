@@ -1,6 +1,8 @@
 accelerate
-bitsandbytes
+dotenv
 httpx
+langchain
+langchain-openai
 markitdown
 Pillow
 transformers

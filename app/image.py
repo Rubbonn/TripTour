@@ -27,6 +27,9 @@ class Image:
 		image_embedder = get_image_embedder()
 		return image_embedder.embed(self.path)
 
+	def read(self) -> bytes:
+		return Path(self.path).read_bytes()
+
 	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
 		pil_image = PILImage.open(self.path)
 		exif = pil_image.getexif()
