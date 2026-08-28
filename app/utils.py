@@ -54,21 +54,25 @@ class WikipediaSearch:
 	
 	@classmethod
 	def search_by_coordinates(cls, lat: float, lon: float) -> dict[str, str]:
-		with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
-			response = client.get(cls._base_url, params={
-				'format': 'json',
-				'action': 'query',
-				'prop': '',
-				'list': 'geosearch',
-				'gscoord': f'{lat}|{lon}',
-				'gslimit': 3,
-				'gsprop': ''
-			}).raise_for_status().json()
-			if len(response['query']['geosearch']) == 0:
-				return {}
+		try:
+			with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
+				response = client.get(cls._base_url, params={
+					'format': 'json',
+					'action': 'query',
+					'prop': '',
+					'list': 'geosearch',
+					'gscoord': f'{lat}|{lon}',
+					'gslimit': 3,
+					'gsprop': ''
+				}).raise_for_status().json()
+				if len(response['query']['geosearch']) == 0:
+					return {}
 
-			results = {article['title']: cls.clear_unused_sections(cls.html_to_markdown(cls.get_html_by_pageid(article['pageid']))) for article in response['query']['geosearch']}
-			return results
+				results = {article['title']: cls.clear_unused_sections(cls.html_to_markdown(cls.get_html_by_pageid(article['pageid']))) for article in response['query']['geosearch']}
+				return results
+		except httpx.HTTPStatusError as e:
+			print(f'Error while searching by coordinates: {e}')
+			raise Exception(f'Error while searching by coordinates: {e}')
 
 	@classmethod
 	def search_by_keyword(cls, keyword: str) -> dict[str, str]:
