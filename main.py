@@ -2,9 +2,7 @@ from app.image import Image
 from app.models.vlm import Vlm
 from app.models.tools import wikipedia_search_keyword
 from base64 import b64encode
-from dotenv import load_dotenv
 
-load_dotenv()
 img1 = Image('IMG_20260715_122913.jpg')
 img1 = Image('IMG_20260715_112410.jpg')
 img3 = Image('IMG_20260715_104924.jpg')

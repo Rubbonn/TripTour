@@ -326,3 +326,17 @@ Upon completion, the tour is exported to a structured folder on the user's local
 1.  TripTour is **not full offline by design** in this version because enrichment and narrative generation rely on a user-configured OpenAI-compatible endpoint.
 2.  Local-only deployments are still possible when the user points the app to a self-hosted/local endpoint (for example a local gateway around Ollama or vLLM).
 3.  The app is endpoint-agnostic: compatibility is based on OpenAI-style API behavior (chat/completions, multimodal support for enrichment model).
+
+---
+
+## 7. Development Utility: Fill Settings
+
+The script `scripts/fill_settings.py` is a development-only helper to quickly populate application settings from terminal prompts.
+
+Run it from the project root as a Python module:
+
+```bash
+python -m scripts.fill_settings
+```
+
+Use module execution (`-m`) instead of running the file directly, so Python resolves package imports correctly (for example `from app.settings import ...`).

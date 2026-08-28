@@ -1,3 +1,4 @@
+from app.constants import _USER_AGENT_
 import httpx
 import re
 from typing import Any
@@ -7,7 +8,7 @@ class WikipediaSearch:
 
 	@classmethod
 	def get_html_by_pageid(cls, pageid: int) -> str:
-		with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+		with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
 			response = client.get(cls._base_url, params={
 				'format': 'json',
 				'action': 'parse',
@@ -53,7 +54,7 @@ class WikipediaSearch:
 	
 	@classmethod
 	def search_by_coordinates(cls, lat: float, lon: float) -> dict[str, str]:
-		with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+		with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
 			response = client.get(cls._base_url, params={
 				'format': 'json',
 				'action': 'query',
@@ -72,7 +73,7 @@ class WikipediaSearch:
 	@classmethod
 	def search_by_keyword(cls, keyword: str) -> dict[str, str]:
 		try:
-			with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+			with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
 				response = client.get(cls._base_url, params={
 					'format': 'json',
 					'action': 'query',
@@ -93,7 +94,7 @@ class WikipediaSearch:
 			raise Exception(f'Error while searching by keyword: {e}')
 
 def reverse_geocode(lat: float, lon: float) -> str:
-	with httpx.Client(headers={'User-Agent': 'TripTour/1.0'}, follow_redirects=True) as client:
+	with httpx.Client(headers={'User-Agent': _USER_AGENT_}, follow_redirects=True) as client:
 		response = client.get('https://nominatim.openstreetmap.org/reverse', params={
 			'format': 'json',
 			'lat': lat,
