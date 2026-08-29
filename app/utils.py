@@ -43,14 +43,18 @@ class WikipediaSearch:
 
 	@classmethod
 	def get_html_by_pageid(cls, pageid: int) -> str:
-		response = cls._make_request({
-			'format': 'json',
-			'action': 'parse',
-			'pageid': pageid,
-			'prop': 'text',
-			'disableeditsection': ''
-		})
-		return response['parse']['text']['*']			
+		try:
+			response = cls._make_request({
+				'format': 'json',
+				'action': 'parse',
+				'pageid': pageid,
+				'prop': 'text',
+				'disableeditsection': ''
+			})
+			return response['parse']['text']['*']
+		except Exception as e:
+			print(f'Error while fetching HTML by pageid: {e}')
+			raise Exception(f'Error while fetching HTML by pageid') from e
 
 	@classmethod
 	def _clear_unused_sections(cls, md: str) -> str:
