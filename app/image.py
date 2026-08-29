@@ -1,4 +1,4 @@
-from app.models.embedders import get_image_embedder
+from app.llm.embedders import get_image_embedder
 from app.utils import reverse_geocode
 from datetime import datetime
 from functools import cached_property
