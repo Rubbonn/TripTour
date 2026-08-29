@@ -5,7 +5,9 @@ from functools import cached_property
 from pathlib import Path
 from PIL import Image as PILImage, ExifTags, ImageFilter
 import re
-from typing import cast
+from typing import cast, TYPE_CHECKING
+if TYPE_CHECKING:
+	from torch import Tensor
 
 class Image:
 	def __init__(self, path: str):
@@ -23,7 +25,7 @@ class Image:
 		self.laplacian_variance: float = self._calc_laplacian_variance()
 
 	@cached_property
-	def embedding(self) -> list[float]:
+	def embedding(self) -> 'Tensor':
 		image_embedder = get_image_embedder()
 		return image_embedder.embed(self.path)
 

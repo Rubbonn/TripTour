@@ -4,8 +4,8 @@ from transformers import AutoImageProcessor, AutoModel
 
 class ImageEmbedder:
 	def __init__(self):
-		self._processor = AutoImageProcessor.from_pretrained('google/siglip2-base-patch16-512', cache_dir='./.model_cache', dtype='auto', device_map='auto')
-		self._model = AutoModel.from_pretrained('google/siglip2-base-patch16-512', cache_dir='./.model_cache', dtype='auto', device_map='auto')
+		self._processor = AutoImageProcessor.from_pretrained('google/siglip2-base-patch16-512', cache_dir='./.model_cache')
+		self._model = AutoModel.from_pretrained('google/siglip2-base-patch16-512', cache_dir='./.model_cache')
 
 	def embed(self, image: PILImage.Image | str):
 		if isinstance(image, str):
