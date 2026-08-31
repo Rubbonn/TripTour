@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from datetime import datetime
 from sqlalchemy import select, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase, relationship

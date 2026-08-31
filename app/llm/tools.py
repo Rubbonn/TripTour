@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.utils import WikipediaSearch
 from langchain.tools import tool
 

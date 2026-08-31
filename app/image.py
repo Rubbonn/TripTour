@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.llm.embedders import get_image_embedder
 from app.utils import reverse_geocode
 from datetime import datetime

@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.constants import _USER_AGENT_
 import httpx
 import re

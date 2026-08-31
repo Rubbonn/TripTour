@@ -340,3 +340,7 @@ python -m scripts.fill_settings
 ```
 
 Use module execution (`-m`) instead of running the file directly, so Python resolves package imports correctly (for example `from app.settings import ...`).
+
+## License
+
+GNU GPLv3

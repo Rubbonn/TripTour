@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.constants import _APP_ORG_, _APP_NAME_
 from enum import Enum
 from PySide6.QtCore import QSettings

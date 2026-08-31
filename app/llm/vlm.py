@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.settings import settings, SETTINGS_LIST
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolRetryMiddleware
