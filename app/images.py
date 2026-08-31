@@ -36,6 +36,10 @@ class Image:
 	def read(self) -> bytes:
 		return Path(self.path).read_bytes()
 
+	def cosine_similarity(self, other: 'Image') -> float:
+		from torch.nn.functional import cosine_similarity
+		return cosine_similarity(self.embedding.unsqueeze(0), other.embedding.unsqueeze(0)).item()
+
 	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
 		pil_image = PILImage.open(self.path)
 		exif = pil_image.getexif()
@@ -141,3 +145,9 @@ class Image:
 	
 	def __str__(self):
 		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
+
+def remove_duplicate_images(images: list[Image]) -> list[Image]:
+	for i, image in enumerate(images):
+		for j in range(i + 1, len(images)):
+			if image.cosine_similarity(images[j]) > 0.9:
+				pass

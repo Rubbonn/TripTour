@@ -16,7 +16,7 @@ Copyright (C) 2026  Ruben Giuriato
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
-from app.image import Image
+from app.images import Image
 from app.models import ImageModel
 
 img1 = Image('IMG_20260715_104924.jpg')
