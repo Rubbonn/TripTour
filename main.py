@@ -16,15 +16,12 @@ Copyright (C) 2026  Ruben Giuriato
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
-from app.images import Image
-from app.models import ImageModel
+from app.images import Image, remove_duplicate_images, read_dir
 
 img1 = Image('IMG_20260715_104924.jpg')
-img_model = ImageModel.get(1)
-if img_model is not None:
-    img_model.delete()
-img_model = ImageModel(id_tour=1, path=img1.path, filename=img1.filename, laplacian_variance=img1.laplacian_variance, embedding=img1.embedding)
-img_model.save()
-
-img_model = ImageModel.get(1)
-print(img1.embedding, img_model.embedding, img1.embedding.equal(img_model.embedding))
+img2 = Image('IMG_20260715_112410.jpg')
+img3 = Image('IMG_20260715_122913.jpg')
+img4 = Image('IMG_20260715_123023.jpg')
+img5 = Image('IMG_20260715_122938.jpg')
+images = read_dir('.')
+remove_duplicate_images(images)

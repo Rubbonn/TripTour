@@ -14,10 +14,13 @@ if TYPE_CHECKING:
 	from torch import Tensor
 
 class Image:
-	def __init__(self, path: str):
-		path_obj = Path(path)
+	def __init__(self, path: str | Path):
+		if isinstance(path, str):
+			path_obj = Path(path)
+		else:
+			path_obj = path
 		if not path_obj.exists() or not path_obj.is_file():
-			raise FileNotFoundError(f"The file {path} does not exist.")
+			raise FileNotFoundError(f"The file {path_obj} does not exist.")
 
 		path_obj = path_obj.resolve()
 		self.path = str(path_obj)
@@ -38,7 +41,7 @@ class Image:
 
 	def cosine_similarity(self, other: 'Image') -> float:
 		from torch.nn.functional import cosine_similarity
-		return cosine_similarity(self.embedding.unsqueeze(0), other.embedding.unsqueeze(0)).item()
+		return cosine_similarity(self.embedding, other.embedding).item()
 
 	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
 		pil_image = PILImage.open(self.path)
@@ -143,11 +146,32 @@ class Image:
 
 		return None
 	
-	def __str__(self):
+	def __repr__(self):
 		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
 
 def remove_duplicate_images(images: list[Image]) -> list[Image]:
-	for i, image in enumerate(images):
-		for j in range(i + 1, len(images)):
-			if image.cosine_similarity(images[j]) > 0.9:
-				pass
+	while True:
+		removed: bool = False
+		for i, image in enumerate(images):
+			for j in range(i + 1, len(images)):
+				print(f'Comparing {image.filename} with {images[j].filename}, cosine_similarity={image.cosine_similarity(images[j])}')
+				if image.cosine_similarity(images[j]) > 0.95:
+					print(f'Removing duplicate: {image.filename} vs {images[j].filename}, laplacian_variance={image.laplacian_variance} vs {images[j].laplacian_variance}')
+					images.pop(j) if images[j].laplacian_variance < image.laplacian_variance else images.pop(i)
+					removed = True
+					break
+			if removed:
+				break
+
+		if not removed:
+			return images
+
+def read_dir(directory: str | Path) -> list[Image]:
+	if isinstance(directory, str):
+		directory = Path(directory)
+	directory = directory.resolve()
+	images: list[Image] = []
+	for file in directory.iterdir():
+		if file.is_file() and file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp']:
+			images.append(Image(file))
+	return images
