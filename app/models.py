@@ -85,6 +85,7 @@ class ImageModel(Base):
 	tour: Mapped['TourModel'] = relationship(back_populates='images')
 	path: Mapped[str]
 	filename: Mapped[str]
+	mime: Mapped[str]
 	latitude: Mapped[float | None]
 	longitude: Mapped[float | None]
 	address: Mapped[str | None]
@@ -95,7 +96,7 @@ class ImageModel(Base):
 	scenes: Mapped[list['SceneModel']] = relationship(secondary=scene_images_association, back_populates='images')
 
 	def __repr__(self):
-		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", latitude={self.latitude}, longitude={self.longitude}, address="{self.address}", date="{self.date}", description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
+		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, address="{self.address}", date="{self.date}", description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
 
 class SceneModel(Base):
 	__tablename__ = 'scenes'

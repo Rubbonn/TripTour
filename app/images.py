@@ -6,6 +6,10 @@ from app.llm.embedders import get_image_embedder
 from app.utils import reverse_geocode
 from datetime import datetime
 from functools import cached_property
+try:
+	from mimetypes import guess_file_type
+except:
+	from mimetypes import guess_type as guess_file_type
 from pathlib import Path
 from PIL import Image as PILImage, ExifTags, ImageFilter
 import re
@@ -25,6 +29,11 @@ class Image:
 		path_obj = path_obj.resolve()
 		self.path = str(path_obj)
 		self.filename = path_obj.name
+		mime = guess_file_type(self.path)[0]
+		if mime is None:
+			raise ValueError(f"Could not determine MIME type for file {self.path}")
+
+		self.mime: str = mime
 		self.gps_coordinates: tuple[float, float] | None = self._extract_gps_coordinates_from_exif()
 		self.address: str | None = self._reverse_geocode()
 		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename() or self._extract_date_from_system()
@@ -147,7 +156,7 @@ class Image:
 		return None
 	
 	def __repr__(self):
-		return f"Image(path='{self.path}', filename='{self.filename}', gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
+		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
 
 def remove_duplicate_images(images: list[Image]) -> list[Image]:
 	while True:
