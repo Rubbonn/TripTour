@@ -16,13 +16,8 @@ Copyright (C) 2026  Ruben Giuriato
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
-from app.images import Image, remove_duplicate_images, read_dir
+from app.models import ImageModel
+from app.images import Image
 
-img1 = Image('IMG_20260715_104924.jpg')
-img2 = Image('IMG_20260715_112410.jpg')
-img3 = Image('IMG_20260715_122913.jpg')
-img4 = Image('IMG_20260715_123023.jpg')
-img5 = Image('IMG_20260715_122938.jpg')
-images = read_dir('.')
-remove_duplicate_images(images)
-print([img.mime for img in images])
+img_model = ImageModel.get(1)
+print(img_model)

@@ -3,6 +3,7 @@ Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
 '''
 
 from app.llm.embedders import get_image_embedder
+from app.models import ImageModel
 from app.utils import reverse_geocode
 from datetime import datetime
 from functools import cached_property
@@ -18,7 +19,25 @@ if TYPE_CHECKING:
 	from torch import Tensor
 
 class Image:
-	def __init__(self, path: str | Path):
+	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, address: str | None, date: datetime | None, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
+		self.path = path
+		self.filename = filename
+		self.mime = mime
+		self.gps_coordinates = gps_coordinates
+		self.address = address
+		self.date = date
+		self.description = description
+		self.laplacian_variance = laplacian_variance
+		if embedding is not None:
+			self.embedding = embedding
+
+	@cached_property
+	def embedding(self) -> 'Tensor':
+		image_embedder = get_image_embedder()
+		return image_embedder.embed(self.path)
+
+	@classmethod
+	def from_file(cls, path: str | Path) -> 'Image':
 		if isinstance(path, str):
 			path_obj = Path(path)
 		else:
@@ -27,23 +46,50 @@ class Image:
 			raise FileNotFoundError(f"The file {path_obj} does not exist.")
 
 		path_obj = path_obj.resolve()
-		self.path = str(path_obj)
-		self.filename = path_obj.name
-		mime = guess_file_type(self.path)[0]
+		path = str(path_obj)
+		filename = path_obj.name
+		mime = guess_file_type(path)[0]
 		if mime is None:
-			raise ValueError(f"Could not determine MIME type for file {self.path}")
+			raise ValueError(f"Could not determine MIME type for file {path}")
 
-		self.mime: str = mime
-		self.gps_coordinates: tuple[float, float] | None = self._extract_gps_coordinates_from_exif()
-		self.address: str | None = self._reverse_geocode()
-		self.date: datetime | None = self._extract_date_from_exif() or self._extract_date_from_filename() or self._extract_date_from_system()
-		self.description: str | None = None
-		self.laplacian_variance: float = self._calc_laplacian_variance()
+		gps_coordinates: tuple[float, float] | None = cls._extract_gps_coordinates_from_exif(path)
+		if gps_coordinates:
+			try:
+				address: str | None = reverse_geocode(gps_coordinates[0], gps_coordinates[1])
+			except ValueError as e:
+				print(f"Reverse geocoding failed for {filename}: {e}")
+				address = None
+		else:
+			address = None
+		date: datetime | None = cls._extract_date_from_exif(path) or cls._extract_date_from_filename(filename) or cls._extract_date_from_system(path)
+		description: str | None = None
+		laplacian_variance: float = cls._calc_laplacian_variance(path)
 
-	@cached_property
-	def embedding(self) -> 'Tensor':
-		image_embedder = get_image_embedder()
-		return image_embedder.embed(self.path)
+		return cls(
+			path=path,
+			filename=filename,
+			mime=mime,
+			gps_coordinates=gps_coordinates,
+			address=address,
+			date=date,
+			description=description,
+			laplacian_variance=laplacian_variance,
+			embedding=None,
+		)
+
+	@classmethod
+	def from_model(cls, model: ImageModel) -> 'Image':
+		return cls(
+			path=model.path,
+			filename=model.filename,
+			mime=model.mime,
+			gps_coordinates=(model.latitude, model.longitude) if model.latitude and model.longitude else None,
+			address=model.address,
+			date=model.date,
+			description=model.description,
+			laplacian_variance=model.laplacian_variance,
+			embedding=model.embedding,
+		)
 
 	def read(self) -> bytes:
 		return Path(self.path).read_bytes()
@@ -52,8 +98,9 @@ class Image:
 		from torch.nn.functional import cosine_similarity
 		return cosine_similarity(self.embedding, other.embedding).item()
 
-	def _extract_gps_coordinates_from_exif(self) -> tuple[float, float] | None:
-		pil_image = PILImage.open(self.path)
+	@classmethod
+	def _extract_gps_coordinates_from_exif(cls, path: str) -> tuple[float, float] | None:
+		pil_image = PILImage.open(path)
 		exif = pil_image.getexif()
 		ifd_gps = exif.get_ifd(ExifTags.IFD.GPSInfo)
 
@@ -74,8 +121,9 @@ class Image:
 			return (lat, lon)
 		return None
 
-	def _extract_date_from_exif(self) -> datetime | None:
-		pil_image = PILImage.open(self.path)
+	@classmethod
+	def _extract_date_from_exif(cls, path: str) -> datetime | None:
+		pil_image = PILImage.open(path)
 		exif = pil_image.getexif()
 
 		date = exif.get(ExifTags.Base.DateTimeDigitized) or exif.get(ExifTags.Base.DateTimeOriginal) or exif.get(ExifTags.Base.DateTime)
@@ -84,7 +132,8 @@ class Image:
 
 		return date
 
-	def _extract_date_from_filename(self) -> datetime | None:
+	@classmethod
+	def _extract_date_from_filename(cls, filename: str) -> datetime | None:
 		patterns = [
 			# IMG_20260725_143012
 			r"^(?:IMG|VID|MVIMG)_(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})_(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})$",
@@ -102,7 +151,7 @@ class Image:
 			r"^signal-(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})-(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})$",
 		]
 		for pattern in patterns:
-			match = re.match(pattern, self.filename, re.IGNORECASE)
+			match = re.match(pattern, filename, re.IGNORECASE)
 			if match:
 				year = int(match.group("year"))
 				month = int(match.group("month"))
@@ -113,13 +162,15 @@ class Image:
 				return datetime(year, month, day, hour, minute, second)
 		return None
 
-	def _extract_date_from_system(self) -> datetime | None:
-		stats = Path(self.path).stat()
+	@classmethod
+	def _extract_date_from_system(cls, path: str) -> datetime | None:
+		stats = Path(path).stat()
 		date = datetime.fromtimestamp(stats.st_birthtime if hasattr(stats, 'st_birthtime') else stats.st_ctime)
 		return date
 
-	def _calc_laplacian_variance(self) -> float:
-		pil_image = PILImage.open(self.path)
+	@classmethod
+	def _calc_laplacian_variance(cls, path: str) -> float:
+		pil_image = PILImage.open(path)
 		gray_image = pil_image.convert('L')
 		gray_image.thumbnail((1024, 1024), PILImage.Resampling.BILINEAR)
 		gray_image = gray_image.filter(ImageFilter.GaussianBlur(radius=0.5))
@@ -145,15 +196,6 @@ class Image:
 		mean = sum(lap_values) / len(lap_values)
 		var = sum((v - mean) ** 2 for v in lap_values) / len(lap_values)
 		return float(var)
-
-	def _reverse_geocode(self) -> str | None:
-		if self.gps_coordinates:
-			try:
-				return reverse_geocode(self.gps_coordinates[0], self.gps_coordinates[1])
-			except ValueError as e:
-				print(f"Reverse geocoding failed for {self.filename}: {e}")
-
-		return None
 	
 	def __repr__(self):
 		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
@@ -182,5 +224,5 @@ def read_dir(directory: str | Path) -> list[Image]:
 	images: list[Image] = []
 	for file in directory.iterdir():
 		if file.is_file() and file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp']:
-			images.append(Image(file))
+			images.append(Image.from_file(file))
 	return images
