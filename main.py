@@ -16,10 +16,8 @@ Copyright (C) 2026  Ruben Giuriato
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
-from app.models import ImageModel
-from app.images import Image
+from app.images import order_images_by_date, read_dir
 
-img_model = ImageModel.get(2)
-print(img_model)
-img = Image.from_model(img_model)
-print(img, img.embedding)
+imgs = read_dir('.')
+imgs = order_images_by_date(imgs)
+print(imgs)

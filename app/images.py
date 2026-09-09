@@ -240,3 +240,15 @@ def read_dir(directory: str | Path) -> list[Image]:
 		if file.is_file() and file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp']:
 			images.append(Image.from_file(file))
 	return images
+
+def order_images_by_date(images: list[Image]) -> list[Image]:
+	dated_images = sorted(
+		(img for img in images if img.date is not None),
+		key=lambda img: img.date
+	)
+	dated_iter = iter(dated_images)
+
+	return [
+		img if img.date is None else next(dated_iter)
+		for img in images
+	]
