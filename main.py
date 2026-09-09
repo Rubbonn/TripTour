@@ -19,5 +19,7 @@ Copyright (C) 2026  Ruben Giuriato
 from app.models import ImageModel
 from app.images import Image
 
-img_model = ImageModel.get(1)
+img_model = ImageModel.get(2)
 print(img_model)
+img = Image.from_model(img_model)
+print(img, img.embedding)

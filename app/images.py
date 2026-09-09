@@ -91,6 +91,20 @@ class Image:
 			embedding=model.embedding,
 		)
 
+	def to_model(self) -> ImageModel:
+		return ImageModel(
+			path=self.path,
+			filename=self.filename,
+			mime=self.mime,
+			latitude=self.gps_coordinates[0] if self.gps_coordinates else None,
+			longitude=self.gps_coordinates[1] if self.gps_coordinates else None,
+			address=self.address,
+			date=self.date,
+			description=self.description,
+			laplacian_variance=self.laplacian_variance,
+			embedding=self.embedding,
+		)
+
 	def read(self) -> bytes:
 		return Path(self.path).read_bytes()
 
@@ -198,7 +212,7 @@ class Image:
 		return float(var)
 	
 	def __repr__(self):
-		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, description={self.description}, date={self.date}, laplacian_variance={self.laplacian_variance})"
+		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, date={self.date}, description={self.description}, laplacian_variance={self.laplacian_variance})"
 
 def remove_duplicate_images(images: list[Image]) -> list[Image]:
 	while True:
