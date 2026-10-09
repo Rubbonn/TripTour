@@ -90,13 +90,14 @@ class ImageModel(Base):
 	longitude: Mapped[float | None]
 	address: Mapped[str | None]
 	date: Mapped[datetime | None]
+	date_confidence: Mapped[int]
 	description: Mapped[str | None]
 	laplacian_variance: Mapped[float]
 	embedding: Mapped['torch.Tensor | None'] = mapped_column(TensorJSON)
 	scenes: Mapped[list['SceneModel']] = relationship(secondary=scene_images_association, back_populates='images')
 
 	def __repr__(self):
-		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, address="{self.address}", date="{self.date}", description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
+		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, address="{self.address}", date="{self.date}", date_confidence={self.date_confidence}, description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
 
 class SceneModel(Base):
 	__tablename__ = 'scenes'

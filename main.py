@@ -19,5 +19,4 @@ Copyright (C) 2026  Ruben Giuriato
 from app.images import order_images_by_date, read_dir
 
 imgs = read_dir('.')
-imgs = order_images_by_date(imgs)
-print(imgs)
+print([(img.filename, img.date_confidence, img.is_anchor) for img in imgs])

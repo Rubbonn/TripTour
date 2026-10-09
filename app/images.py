@@ -19,12 +19,13 @@ if TYPE_CHECKING:
 	from torch import Tensor
 
 class Image:
-	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, address: str | None, date: datetime | None, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
+	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, address: str | None, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
 		self.path = path
 		self.filename = filename
 		self.mime = mime
 		self.gps_coordinates = gps_coordinates
 		self.address = address
+		self.date_confidence = date_confidence
 		self.date = date
 		self.description = description
 		self.laplacian_variance = laplacian_variance
@@ -35,6 +36,10 @@ class Image:
 	def embedding(self) -> 'Tensor':
 		image_embedder = get_image_embedder()
 		return image_embedder.embed(self.path)
+
+	@property
+	def is_anchor(self) -> bool:
+		return self.gps_coordinates is not None and self.date_confidence == 1
 
 	@classmethod
 	def from_file(cls, path: str | Path) -> 'Image':
@@ -61,7 +66,8 @@ class Image:
 				address = None
 		else:
 			address = None
-		date: datetime | None = cls._extract_date_from_exif(path) or cls._extract_date_from_filename(filename) or cls._extract_date_from_system(path)
+		date: datetime | None = cls._extract_date_from_exif(path) or cls._extract_date_from_filename(path_obj.stem) or cls._extract_date_from_system(path)
+		date_confidence: int = 1 if cls._extract_date_from_exif(path) else 2 if cls._extract_date_from_filename(path_obj.stem) else 3 if cls._extract_date_from_system(path) else 4
 		description: str | None = None
 		laplacian_variance: float = cls._calc_laplacian_variance(path)
 
@@ -72,6 +78,7 @@ class Image:
 			gps_coordinates=gps_coordinates,
 			address=address,
 			date=date,
+			date_confidence=date_confidence,
 			description=description,
 			laplacian_variance=laplacian_variance,
 			embedding=None,
@@ -86,6 +93,7 @@ class Image:
 			gps_coordinates=(model.latitude, model.longitude) if model.latitude and model.longitude else None,
 			address=model.address,
 			date=model.date,
+			date_confidence=model.date_confidence,
 			description=model.description,
 			laplacian_variance=model.laplacian_variance,
 			embedding=model.embedding,
@@ -100,6 +108,7 @@ class Image:
 			longitude=self.gps_coordinates[1] if self.gps_coordinates else None,
 			address=self.address,
 			date=self.date,
+			date_confidence=self.date_confidence,
 			description=self.description,
 			laplacian_variance=self.laplacian_variance,
 			embedding=self.embedding,
@@ -212,7 +221,7 @@ class Image:
 		return float(var)
 	
 	def __repr__(self):
-		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, date={self.date}, description={self.description}, laplacian_variance={self.laplacian_variance})"
+		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, date={self.date}, date_confidence={self.date_confidence}, description={self.description}, laplacian_variance={self.laplacian_variance})"
 
 def remove_duplicate_images(images: list[Image]) -> list[Image]:
 	while True:
