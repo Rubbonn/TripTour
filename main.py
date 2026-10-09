@@ -16,7 +16,9 @@ Copyright (C) 2026  Ruben Giuriato
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 
-from app.images import order_images_by_date, read_dir
+from app.images import read_dir
+from app.workflows import PreFilterWorkflow
 
 imgs = read_dir('.')
-print([(img.filename, img.date_confidence, img.is_anchor) for img in imgs])
+wf = PreFilterWorkflow()
+print(wf(imgs))
