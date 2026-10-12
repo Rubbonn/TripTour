@@ -1,3 +1,7 @@
+'''
+Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
+'''
+
 from app.images import Image, order_images_by_date, remove_duplicate_images
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict
