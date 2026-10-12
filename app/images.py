@@ -41,7 +41,7 @@ class Image:
 
 	@property
 	def is_anchor(self) -> bool:
-		return self.gps_coordinates is not None and self.date_confidence == 1
+		return self.gps_confidence == 1 and self.date_confidence == 1
 
 	@classmethod
 	def from_file(cls, path: str | Path) -> 'Image':
@@ -98,7 +98,7 @@ class Image:
 			filename=model.filename,
 			mime=model.mime,
 			gps_coordinates=(model.latitude, model.longitude) if model.latitude and model.longitude else None,
-			gps_confidence=1 if model.latitude and model.longitude else 2,
+			gps_confidence=model.gps_confidence,
 			address=model.address,
 			address_confidence=model.address_confidence,
 			date=model.date,
