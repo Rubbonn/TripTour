@@ -88,7 +88,9 @@ class ImageModel(Base):
 	mime: Mapped[str]
 	latitude: Mapped[float | None]
 	longitude: Mapped[float | None]
+	gps_confidence: Mapped[int]
 	address: Mapped[str | None]
+	address_confidence: Mapped[int]
 	date: Mapped[datetime | None]
 	date_confidence: Mapped[int]
 	description: Mapped[str | None]
@@ -97,7 +99,7 @@ class ImageModel(Base):
 	scenes: Mapped[list['SceneModel']] = relationship(secondary=scene_images_association, back_populates='images')
 
 	def __repr__(self):
-		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, address="{self.address}", date="{self.date}", date_confidence={self.date_confidence}, description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
+		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, gps_confidence={self.gps_confidence}, address="{self.address}", address_confidence={self.address_confidence}, date="{self.date}", date_confidence={self.date_confidence}, description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
 
 class SceneModel(Base):
 	__tablename__ = 'scenes'

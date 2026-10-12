@@ -19,12 +19,14 @@ if TYPE_CHECKING:
 	from torch import Tensor
 
 class Image:
-	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, address: str | None, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
+	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, gps_confidence: int, address: str | None, address_confidence: int, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
 		self.path = path
 		self.filename = filename
 		self.mime = mime
 		self.gps_coordinates = gps_coordinates
+		self.gps_confidence = gps_confidence
 		self.address = address
+		self.address_confidence = address_confidence
 		self.date_confidence = date_confidence
 		self.date = date
 		self.description = description
@@ -58,9 +60,12 @@ class Image:
 			raise ValueError(f"Could not determine MIME type for file {path}")
 
 		gps_coordinates: tuple[float, float] | None = cls._extract_gps_coordinates_from_exif(path)
+		gps_confidence: int = 1 if gps_coordinates else 2
+		address_confidence: int = 2
 		if gps_coordinates:
 			try:
 				address: str | None = reverse_geocode(gps_coordinates[0], gps_coordinates[1])
+				address_confidence: int = 1 if address else 2
 			except ValueError as e:
 				print(f"Reverse geocoding failed for {filename}: {e}")
 				address = None
@@ -76,7 +81,9 @@ class Image:
 			filename=filename,
 			mime=mime,
 			gps_coordinates=gps_coordinates,
+			gps_confidence=gps_confidence,
 			address=address,
+			address_confidence=address_confidence,
 			date=date,
 			date_confidence=date_confidence,
 			description=description,
@@ -91,7 +98,9 @@ class Image:
 			filename=model.filename,
 			mime=model.mime,
 			gps_coordinates=(model.latitude, model.longitude) if model.latitude and model.longitude else None,
+			gps_confidence=1 if model.latitude and model.longitude else 2,
 			address=model.address,
+			address_confidence=model.address_confidence,
 			date=model.date,
 			date_confidence=model.date_confidence,
 			description=model.description,
@@ -106,7 +115,9 @@ class Image:
 			mime=self.mime,
 			latitude=self.gps_coordinates[0] if self.gps_coordinates else None,
 			longitude=self.gps_coordinates[1] if self.gps_coordinates else None,
+			gps_confidence=self.gps_confidence,
 			address=self.address,
+			address_confidence=self.address_confidence,
 			date=self.date,
 			date_confidence=self.date_confidence,
 			description=self.description,
@@ -221,7 +232,7 @@ class Image:
 		return float(var)
 	
 	def __repr__(self):
-		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, address={self.address}, date={self.date}, date_confidence={self.date_confidence}, description={self.description}, laplacian_variance={self.laplacian_variance})"
+		return f"Image(path='{self.path}', filename='{self.filename}', mime={self.mime}, gps_coordinates={self.gps_coordinates}, gps_confidence={self.gps_confidence}, address={self.address}, address_confidence={self.address_confidence}, date={self.date}, date_confidence={self.date_confidence}, description={self.description}, laplacian_variance={self.laplacian_variance})"
 
 def remove_duplicate_images(images: list[Image]) -> list[Image]:
 	while True:
