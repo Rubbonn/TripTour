@@ -60,12 +60,12 @@ class Image:
 			raise ValueError(f"Could not determine MIME type for file {path}")
 
 		gps_coordinates: tuple[float, float] | None = cls._extract_gps_coordinates_from_exif(path)
-		gps_confidence: int = 1 if gps_coordinates else 2
-		address_confidence: int = 2
+		gps_confidence: int = 1 if gps_coordinates else 4
+		address_confidence: int = 4
 		if gps_coordinates:
 			try:
 				address: str | None = reverse_geocode(gps_coordinates[0], gps_coordinates[1])
-				address_confidence: int = 1 if address else 2
+				address_confidence: int = 1 if address else 4
 			except ValueError as e:
 				print(f"Reverse geocoding failed for {filename}: {e}")
 				address = None
