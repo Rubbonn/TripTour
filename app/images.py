@@ -159,8 +159,9 @@ class Image:
 	def _extract_date_from_exif(cls, path: str) -> datetime | None:
 		pil_image = PILImage.open(path)
 		exif = pil_image.getexif()
+		exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
 
-		date = exif.get(ExifTags.Base.DateTimeDigitized) or exif.get(ExifTags.Base.DateTimeOriginal) or exif.get(ExifTags.Base.DateTime)
+		date = exif_ifd.get(ExifTags.Base.DateTimeOriginal) or exif_ifd.get(ExifTags.Base.DateTimeDigitized) or exif.get(ExifTags.Base.DateTime)
 		if date:
 			date = datetime.strptime(date, "%Y:%m:%d %H:%M:%S")
 
