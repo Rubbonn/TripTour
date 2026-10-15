@@ -30,21 +30,16 @@ class EnrichmentWorkflow:
 		workflow = StateGraph(EnrichmentState)
 
 		def find_anchors(images: list[Image], index: int) -> tuple[Image | None, Image | None]:
-			# Find the nearest anchor image before the current image
-			anchor_before = None
-			for i in range(index - 1, -1, -1):
-				if images[i].is_anchor:
-					anchor_before = images[i]
-					break
-
-			# Find the nearest anchor image after the current image
-			anchor_after = None
-			for i in range(index + 1, len(images)):
-				if images[i].is_anchor:
-					anchor_after = images[i]
-					break
-
+			anchor_before = next((image for image in reversed(images[:index]) if image.is_anchor), None)
+			anchor_after = next((image for image in images[index + 1:] if image.is_anchor), None)
 			return anchor_before, anchor_after
+
+		def inherit_position(image: Image, anchor: Image, confidence: int) -> None:
+			image.gps_coordinates = anchor.gps_coordinates
+			image.gps_confidence = confidence
+			if anchor.address is not None:
+				image.address = anchor.address
+				image.address_confidence = confidence
 		
 		def propagate_positions(images: list[Image]) -> list[Image]:
 			from app.utils import coordinates_distance
@@ -55,63 +50,30 @@ class EnrichmentWorkflow:
 					continue
 
 				anchor_before, anchor_after = find_anchors(images, i)
-				if image.date_confidence > 2: # Data non affidabile
-					if anchor_before is None and anchor_after is None:
-						image.gps_coordinates = None
-						image.gps_confidence = 4
-						image.address = None
-						image.address_confidence = 4
-					elif anchor_before is None and anchor_after is not None or anchor_before is not None and anchor_after is None:
-						anchor = anchor_before if anchor_after is None else anchor_after
-						assert anchor is not None
-						image.gps_coordinates = anchor.gps_coordinates
-						image.gps_confidence = 3
-						image.address = anchor.address
-						image.address_confidence = 3
-					elif anchor_before is not None and anchor_after is not None:
-						anchor_distance = coordinates_distance(anchor_before.gps_coordinates, anchor_after.gps_coordinates)
-						most_similar_anchor = anchor_before if image.cosine_similarity(anchor_before) > image.cosine_similarity(anchor_after) else anchor_after
-						if anchor_distance <= distance_threshold:
-							anchor_date_difference = (anchor_after.date - anchor_before.date).total_seconds()
-							image.gps_coordinates = most_similar_anchor.gps_coordinates
-							image.gps_confidence = 2 if anchor_date_difference <= time_threshold else 3
-							image.address = most_similar_anchor.address
-							image.address_confidence = 2 if anchor_date_difference <= time_threshold else 3
-						else:
-							image.gps_coordinates = most_similar_anchor.gps_coordinates
-							image.gps_confidence = 3
-							image.address = most_similar_anchor.address
-							image.address_confidence = 3
-				elif image.date_confidence <= 2: # Data affidabile
-					if anchor_before is not None and (image.date - anchor_before.date).total_seconds() > time_threshold:
-						anchor_before = None
-					if anchor_after is not None and (anchor_after.date - image.date).total_seconds() > time_threshold:
-						anchor_after = None
-					if anchor_before is None and anchor_after is None:
-						image.gps_coordinates = None
-						image.gps_confidence = 4
-						image.address = None
-						image.address_confidence = 4
-					elif anchor_before is None and anchor_after is not None or anchor_before is not None and anchor_after is None:
-						anchor = anchor_before if anchor_after is None else anchor_after
-						assert anchor is not None
-						image.gps_coordinates = anchor.gps_coordinates
-						image.gps_confidence = 3
-						image.address = anchor.address
-						image.address_confidence = 3
-					elif anchor_before is not None and anchor_after is not None:
-						gap_before = (image.date - anchor_before.date).total_seconds()
-						gap_after = (anchor_after.date - image.date).total_seconds()
-						nearest_anchor, nearest_gap = (anchor_before, gap_before) if gap_before <= gap_after else (anchor_after, gap_after)
-						# Moto uniforme tra le due àncore: spostamento stimato rispetto all'àncora più vicina nel tempo
-						anchor_distance = coordinates_distance(anchor_before.gps_coordinates, anchor_after.gps_coordinates)
-						total_gap = gap_before + gap_after
-						displacement = anchor_distance * nearest_gap / total_gap if total_gap > 0 else 0.0
-						confidence = 2 if displacement <= distance_threshold else 3
-						image.gps_coordinates = nearest_anchor.gps_coordinates
-						image.gps_confidence = confidence
-						image.address = nearest_anchor.address
-						image.address_confidence = confidence
+				if anchor_before is None or anchor_after is None:
+					# Al massimo un'àncora: lo spostamento non si può stimare
+					anchor = anchor_before or anchor_after
+					if anchor is not None and (image.date_confidence > 2 or abs(image.date - anchor.date).total_seconds() <= time_threshold):
+						inherit_position(image, anchor, 3)
+					continue
+
+				anchor_distance = coordinates_distance(anchor_before.gps_coordinates, anchor_after.gps_coordinates)
+				if image.date_confidence > 2: # Data non affidabile: vale solo l'ordine, la foto è tra le due àncore
+					most_similar_anchor = anchor_before if image.cosine_similarity(anchor_before) > image.cosine_similarity(anchor_after) else anchor_after
+					anchor_date_difference = (anchor_after.date - anchor_before.date).total_seconds()
+					inherit_position(image, most_similar_anchor, 2 if anchor_distance <= distance_threshold and anchor_date_difference <= time_threshold else 3)
+					continue
+
+				gap_before = (image.date - anchor_before.date).total_seconds()
+				gap_after = (anchor_after.date - image.date).total_seconds()
+				nearest_anchor, nearest_gap = (anchor_before, gap_before) if gap_before <= gap_after else (anchor_after, gap_after)
+				if gap_before <= time_threshold and gap_after <= time_threshold:
+					# Moto uniforme tra le due àncore: spostamento stimato rispetto all'àncora più vicina nel tempo
+					displacement = anchor_distance * nearest_gap / (gap_before + gap_after) if gap_before + gap_after > 0 else 0.0
+					inherit_position(image, nearest_anchor, 2 if displacement <= distance_threshold else 3)
+				elif nearest_gap <= time_threshold or anchor_distance <= distance_threshold:
+					# Una sola àncora entro l'ora, oppure àncore nello stesso luogo ma lontane nel tempo
+					inherit_position(image, nearest_anchor, 3)
 			return images
 
 		# Add nodes and edges for enrichment steps here
