@@ -146,6 +146,9 @@ class Image:
 
 			lat = float(lat[0] + lat[1] / 60 + lat[2] / 3600)
 			lon = float(lon[0] + lon[1] / 60 + lon[2] / 3600)
+			# Alcuni dispositivi scrivono 0,0 quando non hanno agganciato il segnale
+			if lat == 0 and lon == 0:
+				return None
 
 			if lat_ref == "S":
 				lat = -lat
