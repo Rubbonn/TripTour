@@ -243,9 +243,7 @@ def remove_duplicate_images(images: list[Image]) -> list[Image]:
 		removed: bool = False
 		for i, image in enumerate(images):
 			for j in range(i + 1, len(images)):
-				print(f'Comparing {image.filename} with {images[j].filename}, cosine_similarity={image.cosine_similarity(images[j])}')
 				if image.cosine_similarity(images[j]) > 0.95:
-					print(f'Removing duplicate: {image.filename} vs {images[j].filename}, laplacian_variance={image.laplacian_variance} vs {images[j].laplacian_variance}')
 					images.pop(j) if images[j].laplacian_variance < image.laplacian_variance else images.pop(i)
 					removed = True
 					break

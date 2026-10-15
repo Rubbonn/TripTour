@@ -17,8 +17,10 @@ Copyright (C) 2026  Ruben Giuriato
 '''
 
 from app.images import read_dir
-from app.workflows import PreFilterWorkflow
+from app.workflows import PreFilterWorkflow, EnrichmentWorkflow
 
 imgs = read_dir('.')
 wf = PreFilterWorkflow()
+print(wf(imgs))
+wf = EnrichmentWorkflow()
 print(wf(imgs))

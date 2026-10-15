@@ -76,7 +76,9 @@ class EnrichmentWorkflow:
 					inherit_position(image, nearest_anchor, 3)
 			return images
 
-		# Add nodes and edges for enrichment steps here
+		workflow.add_node('propagate_positions', lambda state: {'images': propagate_positions(state['images'])})
+		workflow.add_edge(START, 'propagate_positions')
+		workflow.add_edge('propagate_positions', END)
 		self._workflow = workflow.compile()
 
 	def __call__(self, images: list[Image]) -> list[Image]:
