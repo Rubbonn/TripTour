@@ -1,152 +1,175 @@
-# Documento di Specifiche Tecniche (V8): TripTour
+# Documento di Specifiche Tecniche (V9): TripTour
 
-Questo documento descrive le specifiche di sviluppo di **TripTour**, un'applicazione desktop che trasforma raccolte non strutturate di foto in tour virtuali narrati. L'applicazione utilizza un'interfaccia utente sviluppata in **Svelte (SPA)** ospitata all'interno di un contenitore **PySide6 (Qt)**, comunicando tramite un bridge IPC bidirezionale (`QWebChannel`).
+Questo documento descrive le specifiche di sviluppo di **TripTour**, un **servizio web** che trasforma raccolte non strutturate di foto di viaggio in tour virtuali narrati. Gli utenti caricano le foto dal browser; il server le ordina, le filtra, le geolocalizza e le descrive, le raggruppa in scene e scrive uno script narrativo, che un player nel browser legge ad alta voce mentre mostra le foto.
 
-TripTour utilizza un'**architettura AI ibrida**:
-- I **Transformer locali** sono usati solo per gli embedding delle immagini (supporto a deduplicazione e clustering).
+Il servizio è composto da un **backend Python** (framework web da definire) che renderizza pagine HTML in gran parte statiche, con componenti **Svelte** montati solo sulle parti della pagina che hanno bisogno di reattività. Le sessioni utente sono conservate in **Redis** e i dati persistenti in **MariaDB**.
+
+TripTour utilizza un'**architettura AI ibrida**, interamente lato server:
+- Un **modello Transformers locale** sul server calcola gli embedding delle immagini (supporto a deduplicazione, propagazione delle posizioni e clustering).
 - **LangChain/LangGraph + API compatibili OpenAI** sono usati per l'arricchimento multimodale e la sintesi narrativa finale.
-- L'utente configura URL endpoint, chiave API e scelta dei modelli (modello vision + modello testuale) al primo avvio e successivamente nelle Impostazioni.
+- URL endpoint, chiave API e modelli (modello vision + modello testuale) sono definiti dall'**operatore del servizio** nella configurazione del server. Gli utenti non si occupano mai della configurazione AI.
+
+L'accesso al servizio richiede un account utente: ogni utente crea e gestisce i propri tour (vedi Sezione 7). L'hosting dei tour degli utenti è una possibile evoluzione futura.
 
 ---
 
-## 1. Architettura del Sistema & Bridge IPC
-
-L'applicazione combina le prestazioni di un backend Python nativo con l'interattività di un frontend Svelte moderno.
+## 1. Architettura del Sistema
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 TRIPTOUR UI (Svelte SPA)                    │
-├─────────────────────────────────────────────────────────────┤
-│ QWebChannel (JS Client)                                     │
+│                           BROWSER                           │
+│      Pagine HTML statiche + isole Svelte (UI dinamica)      │
 └──────────────────────────────▲──────────────────────────────┘
-                               │ IPC Bridge (QWebChannel)
+                               │ HTTPS: pagine HTML + API JSON
 ┌──────────────────────────────▼──────────────────────────────┐
-│ PySide6 WebEngineView & QWebChannel (Python Server)          │
-├─────────────────────────────────────────────────────────────┤
-│                     PYTHON BACKEND CONTROLLER               │
-└─────────────────────────────────────────────────────────────┘
+│         WEB BACKEND (Python, framework da definire)         │
+│         Pagine · API JSON · Sessioni · Upload · Job         │
+└───────┬──────────────────────┬──────────────────────┬───────┘
+        │                      │                      │
+┌───────▼───────┐   ┌──────────▼──────────┐   ┌───────▼───────┐
+│     Redis     │   │   WORKER PIPELINE   │   │    MariaDB    │
+│    sessioni   │   │  workflow LangGraph │   │      dati     │
+│  (+ coda job) │   │ + embedder SigLIP 2 │   │  persistenti  │
+└───────────────┘   └──────────┬──────────┘   └───────────────┘
+                               │
+               ┌───────────────┴───────────────┐
+  ┌────────────▼────────────┐     ┌────────────▼────────────┐
+  │       Storage foto      │     │     Servizi esterni     │
+  │      upload, export     │     │ endpoint AI, Nominatim, │
+  │                         │     │        Wikipedia        │
+  └─────────────────────────┘     └─────────────────────────┘
 ```
 
-* **PySide6 `QWebEngineView`**: renderizza la SPA Svelte compilata in un bundle locale leggero.
-* **`QWebChannel`**: espone un oggetto controller Python al contesto JavaScript globale della pagina web. Il frontend Svelte può invocare metodi Python in modo asincrono (es. `pybridge.select_folder().then(...)`).
+* **Frontend — pagine statiche + isole Svelte**: le pagine sono renderizzate dal backend come semplice HTML. Gli elementi che non hanno bisogno di reattività (header, footer, navigazione, contenuti statici) restano statici; i **componenti Svelte** vengono montati solo sulle parti dinamiche della pagina — upload delle foto, avanzamento della pipeline, Storyboard Editor, player del tour — e comunicano con il backend tramite l'API JSON.
+* **Web backend (Python, framework da definire)**: renderizza le pagine, espone l'API JSON usata dai componenti Svelte, riceve gli upload, gestisce le sessioni utente e accoda i job della pipeline. Il codice di elaborazione in `app/` viene usato dal backend come libreria.
+* **Worker della pipeline**: le fasi di elaborazione (Sezione 2) durano da pochi secondi a molti minuti — inferenza degli embedding, una chiamata al modello vision per ogni foto, chiamate ad API esterne — quindi vengono eseguite fuori dal ciclo della richiesta HTTP, in worker in background alimentati da una coda di job (Redis può fare anche da broker; la libreria per la coda è da definire). Il frontend segue l'avanzamento di ogni job (polling, SSE o WebSocket, da definire). I worker condividono con il backend MariaDB e lo storage delle foto.
+* **Redis**: conserva le sessioni utente; può fare anche da broker della coda di job e da cache dei risultati delle API esterne (reverse geocoding, Wikipedia).
+* **MariaDB**: conserva i dati persistenti (utenti, tour, immagini, scene), a cui si accede tramite l'ORM SQLAlchemy.
+* **Storage foto**: le foto caricate e i pacchetti esportati sono conservati in uno storage lato server (volume locale o object storage compatibile S3, da definire); il database ne memorizza solo la posizione.
+* **Servizi esterni**: l'endpoint AI compatibile OpenAI configurato dall'operatore, OpenStreetMap Nominatim (reverse geocoding) e l'API di Wikipedia (articoli di contesto).
 
 ---
 
 ## 2. Flusso Utente & Pipeline di Elaborazione Dettagliata
 
 ```
-[ Avvio App ]
+[ Registrazione / Login ]
     │
-    ├──► [ Configurazione AI richiesta? ] -- sì --> [ Configurazione AI al primo avvio ]
-    │                                          (URL Base + Chiave API + Selezione Modello)
-    │
-    └──► no / completata
+    └──► [ Homepage ]
             │
-            └──► [ Homepage ] ──► [ Carica Tour Precedente ]
-                      │
-                      └──► [ Nuovo Tour ]
-                              │
-                              ├──► Seleziona file/cartelle, Lingua e Nome Tour (PySide6 Dialog & Svelte)
-                              │
-                              ├──► FASE 0: Ordinamento Multi-Livello (EXIF → Regex → mtime → Ordine di Importazione)
-                              │
-                              ├──► FASE 1: Filtraggio e De-duplicazione (CLIP + Laplacian)
-                              │
-                              ├──► FASE 2: Arricchimento Basato su Anchor (Punti Anchor + Propagazione Contesto + Modello Vision Remoto)
-                              │
-                              ├──► FASE 3: Clustering Ibrido (Spazio-Tempo / Tempo+Visivo / Rilevamento Cambiamenti Semantici)
-                              │
-                              ├──► FASE 4: Editor Storyboard (UI Svelte - Modifiche Manuali)
-                              │
-                              ├──► FASE 5: Generazione Script (Modello Testuale Remoto + Nome Tour + Tag Inline)
-                              │
-                              └──► [ Player HTML & Esportazione Pacchetto ]
+            ├──► [ I Miei Tour ] ──► [ Apri un Tour Precedente (Storyboard / Player) ]
+            │
+            └──► [ Nuovo Tour ]
+                    │
+                    ├──► Carica le foto, scegli Lingua e Nome Tour (browser)
+                    │
+                    ├──► FASE 0: Estrazione Metadati & Ordinamento Multi-Livello (EXIF → Regex sul Filename → Data File → Ordine di Upload)
+                    │
+                    ├──► FASE 1: Filtraggio e De-duplicazione (Embedding SigLIP 2 + Varianza del Laplaciano)
+                    │
+                    ├──► FASE 2: Arricchimento Basato su Anchor (Punti Anchor + Propagazione Posizioni + Modello Vision Remoto)
+                    │
+                    ├──► FASE 3: Clustering Ibrido (Spazio-Tempo / Tempo+Visivo / Rilevamento Cambiamenti Semantici)
+                    │
+                    ├──► FASE 4: Storyboard Editor (Componente Svelte - Modifiche Manuali)
+                    │
+                    ├──► FASE 5: Generazione Script (Modello Testuale Remoto + Nome Tour + Tag Inline)
+                    │
+                    └──► [ Player nel Browser & Esportazione Pacchetto ]
 ```
 
-### Fase 0: Avvio, Inizializzazione e Ordinamento Multi-Livello (Sanitizzazione)
-1.  **Gate di Configurazione Pre-Homepage**: all'avvio, prima che sia mostrata la homepage e prima che l'utente possa caricare/avviare qualsiasi tour, TripTour verifica se esiste una configurazione AI.
-2.  **Wizard Obbligatorio di Configurazione AI al Primo Avvio**: al primo avvio (o ogni volta che la configurazione è assente), TripTour apre un flusso di setup obbligatorio in cui l'utente fornisce:
-    * **URL Base** di un endpoint compatibile OpenAI (esempi: OpenAI, OpenRouter, vLLM locale, gateway compatibile Ollama).
-    * **Chiave API** (o token equivalente) per l'endpoint selezionato.
-    * **Modello di Arricchimento** (deve supportare input immagine / vision).
-    * **Modello Narrativo** (modello testuale per la generazione finale del tour).
-    
-    La configurazione viene validata con una chiamata di test leggera e poi persistita localmente tramite **PySide6 QSettings**. Le stesse impostazioni possono essere modificate successivamente da una sezione dedicata **Impostazioni > Provider AI**.
-3.  **Homepage**: dopo che la configurazione è valida, l'utente può riprendere un tour precedentemente salvato dal database SQLite locale o avviarne uno nuovo.
-4.  **Inizializzazione & Selezione**:
-    * L'utente seleziona file o una cartella tramite dialog nativi PySide6 (`QFileDialog`). Le foto importate possono essere in un ordine completamente non strutturato.
-    * L'utente seleziona la lingua del tour.
-    * **Nome Tour (Novità)**: l'utente inserisce un titolo descrittivo per il tour (es. *"Visita ai Musei Vaticani"* oppure *"Vacanze in Toscana 2026"*). Questo nome viene salvato nel database e **diventa un metadato cruciale** passato ai modelli AI nelle fasi successive per guidarne la comprensione dei contesti storici, geografici e artistici.
-5.  **Strategia di Ordinamento Multi-Livello**: prima che venga eseguita qualunque analisi, il backend applica una pipeline di sanitizzazione a cascata per stabilire il miglior ordine cronologico possibile. A ogni foto viene assegnato un timestamp usando la prima fonte disponibile nella seguente catena di priorità:
+Le Fasi 0–3 e 5 vengono eseguite come job in background sui worker della pipeline; la Fase 4 è il passaggio interattivo nel browser.
 
-    | Priorità | Fonte | Descrizione |
+### Fase 0: Creazione del Tour, Upload e Ordinamento Multi-Livello (Sanitizzazione)
+1.  **Creazione del Tour**: dalla homepage l'utente avvia un nuovo tour, scegliendo:
+    * la **Lingua** del tour (salvata come codice, es. `it`, `en`), usata per le descrizioni delle foto e per la narrazione finale.
+    * il **Nome Tour**: un titolo descrittivo (es. *"Visita ai Musei Vaticani"* oppure *"Vacanze in Toscana 2026"*). Questo nome viene salvato nel database e **diventa un metadato cruciale** passato ai modelli AI nelle fasi successive per guidarne la comprensione dei contesti storici, geografici e artistici.
+2.  **Upload delle Foto**: l'utente seleziona dal browser dei file o un'intera cartella (selettore file o drag & drop). I formati supportati sono JPEG, PNG e WebP. I file vengono caricati **senza modifiche**, così che i loro metadati EXIF arrivino intatti al server. Insieme a ogni file il browser invia il suo timestamp `lastModified`, l'unica data del file disponibile in un contesto web (sul server, le date del file rifletterebbero solo l'upload). Le foto importate possono essere in un ordine completamente non strutturato.
+3.  **Estrazione dei Metadati**: per ogni foto il backend rileva il MIME type ed estrae:
+    * le **coordinate GPS** dal blocco EXIF `GPSInfo` (`GPSLatitude`, `GPSLongitude`, `GPSLatitudeRef`, `GPSLongitudeRef`). Le coordinate `0, 0`, scritte da alcuni dispositivi quando non hanno agganciato il segnale GPS, vengono scartate.
+    * l'**indirizzo**, tramite reverse geocoding delle coordinate (vedi Step 2.2).
+    * la **data di scatto**, seguendo la strategia multi-livello descritta sotto.
+    * la **nitidezza**, come varianza del Laplaciano calcolata su una copia in scala di grigi ridotta a 1024 px con una leggera sfocatura gaussiana (usata nella Fase 1).
+4.  **Strategia Multi-Livello per la Data**: prima che venga eseguita qualunque analisi, a ogni foto viene assegnato un timestamp usando la prima fonte disponibile nella seguente catena di priorità. Il livello usato viene registrato nella colonna `date_confidence`, abilitando trasparenza e correzione manuale nello Storyboard Editor:
+
+    | `date_confidence` | Fonte | Descrizione |
     |----------|--------|-------------|
-    | **1 (Più Alta)** | `EXIF DateTimeOriginal` | Estratto dai metadati EXIF interni dell'immagine — il vero timestamp di scatto. |
-    | **2** | **Parsing Regex sul Filename** | Una regex scandisce il filename alla ricerca di timestamp incorporati (es. `IMG_20260725_143052.jpg`, `2026-07-25 14.30.45.png`, `VID-20260725-WA0001.jpeg`). I pattern comuni includono `YYYYMMDD_HHMMSS`, `YYYY-MM-DD HH.MM.SS` e prefissi stile WhatsApp `YYYYMMDD`. |
-    | **3** | **Tempo di Modifica del Filesystem (`mtime`/`ctime`)** | Se non è possibile estrarre un timestamp da EXIF o filename, il backend usa come fallback il tempo di ultima modifica del file (o tempo di creazione sui filesystem supportati). |
-    | **4 (Più Bassa)** | **Ordine Nativo di Importazione** | Se tutti i metodi precedenti falliscono (es. file con nomi generici e metadati corrotti), viene preservato come ultima risorsa l'ordine originale con cui i file sono stati selezionati/importati. |
+    | **1 (Più Alta)** | **EXIF** | `DateTimeOriginal`, poi `DateTimeDigitized`, poi `DateTime` — il vero timestamp di scatto. |
+    | **2** | **Parsing Regex sul Filename** | Un insieme di regex riconosce i timestamp inseriti da fotocamere e app: `IMG_20260725_143012` (anche `VID_` e `MVIMG_`), `PXL_20260725_143012123` (millisecondi opzionali), `20260725_143012`, `2026-07-25_14-30-12` / `2026-07-25 14.30.12`, `Screenshot_20260725-143012`, `Screenshot 2026-07-25 at 14.30.12`, `signal-2026-07-25-143012`. |
+    | **3** | **Data del File** | Il timestamp `lastModified` del file, così come riportato dal browser al momento dell'upload. |
+    | **4 (Più Bassa)** | **Nessuna** | Nessuna data disponibile: la foto mantiene la sua posizione nell'ordine di upload. |
 
-    *Ogni foto registra nel database un campo `sort_source` che indica quale livello di priorità è stato usato, abilitando trasparenza e potenziale correzione manuale nello Storyboard Editor.*
+5.  **Ordinamento**: le foto con una data vengono ordinate cronologicamente, mentre le foto senza data mantengono la loro posizione originale nella sequenza.
+6.  **Livelli di Confidenza della Posizione**: oltre a `date_confidence`, ogni foto registra `gps_confidence` e `address_confidence`, con i seguenti livelli:
+
+    | Livello | `gps_confidence` / `address_confidence` |
+    |---------|------------------------------------------|
+    | **1** | Coordinate EXIF proprie / reverse geocoding delle coordinate proprie della foto |
+    | **2** | Ereditata da un Anchor — confidenza alta (Step 2.3) |
+    | **3** | Ereditata da un Anchor — confidenza bassa (Step 2.3) |
+    | **4** | Non disponibile |
 
 ### Fase 1: Filtraggio & Rimozione Duplicati (Deduplicazione)
 Usando la sequenza appena ordinata, per prevenire ridondanza visiva (come più scatti dello stesso soggetto):
-1.  Il backend carica un modello locale leggero di embedding immagini (es. `laion/CLIP-ViT-B-32-laion2B-s34B-b79K` tramite Transformers).
-2.  Genera vettori (embedding) per ogni foto. **Questi embedding vengono persistiti** (memorizzati nella colonna `embedding` della tabella `media`) per il riuso nella Fase 2.3 (tie-breaking di affinità visiva CLIP) e nella Fase 3 (clustering Tempo+Visivo e Rilevamento Cambiamenti Semantici), evitando ricaricamenti ridondanti del modello.
-3.  Calcola la similarità coseno tra foto adiacenti cronologicamente.
-4.  **Risoluzione Duplicati**: se due o più foto adiacenti superano una soglia di similarità predefinita (es. > 0.85):
-    * Viene calcolata la **varianza del Laplaciano** per ogni foto, per misurarne la nitidezza (sfocatura).
-    * Viene mantenuta la foto più nitida (varianza più alta); le altre vengono rimosse dalla sequenza attiva del tour o nascoste.
+1.  Il worker carica un modello locale di embedding immagini, `google/siglip2-base-patch16-512` (SigLIP 2) tramite Transformers, una sola volta per processo.
+2.  Genera un vettore (embedding) per ogni foto. **Questi embedding vengono persistiti** (memorizzati nella colonna `embedding` della tabella `images`) per il riuso nello Step 2.3 (tie-breaking per affinità visiva) e nella Fase 3 (clustering Tempo+Visivo e Rilevamento Cambiamenti Semantici), evitando inferenze ridondanti.
+3.  Calcola la similarità coseno tra **tutte le coppie** di foto del tour, non solo tra quelle adiacenti, così da individuare scatti quasi identici anche quando non sono consecutivi.
+4.  **Risoluzione Duplicati**: quando due foto superano la soglia di similarità (**> 0.95**), quella con la varianza del Laplaciano più bassa (la più sfocata) viene rimossa dalla sequenza del tour. Il controllo viene ripetuto finché nessuna coppia supera la soglia.
 
-### Fase 2: Arricchimento Basato su Anchor (Punti Anchor + Propagazione Contesto + Modello Vision)
-La fase di arricchimento segue una strategia **Anchor-Based**: le foto con metadati completi (GPS + timestamp) fungono da **Anchor Points**, e le loro informazioni contestuali vengono propagate avanti e indietro verso le foto vicine prive di metadati. Questo garantisce la massima copertura anche quando GPS o timestamp sono parziali o assenti.
+### Fase 2: Arricchimento Basato su Anchor (Punti Anchor + Propagazione Posizioni + Modello Vision)
+La fase di arricchimento segue una strategia **Anchor-Based**: le foto di cui sono certi sia la posizione sia l'orario fungono da **Anchor Points**, e la loro posizione viene propagata alle foto vicine prive di GPS. Questo garantisce la massima copertura anche quando GPS o timestamp sono parziali o assenti.
 
-#### Step 2.1: Classificazione e Identificazione Anchor
-Ogni foto nella sequenza ordinata viene classificata in base alla completezza dei suoi metadati:
+#### Step 2.1: Identificazione degli Anchor
+Una foto è un **Anchor** quando sia le coordinate GPS sia la data provengono da EXIF (`gps_confidence = 1` e `date_confidence = 1`). Le foto con coordinate EXIF proprie ma una data meno affidabile mantengono le loro coordinate, ma non vengono usate come Anchor. Le foto senza coordinate sono candidate alla propagazione della posizione.
 
-| Classe | GPS | Timestamp | Ruolo |
-|-------|-----|-----------|------|
-| **Anchor (A)** | ✓ Presente | ✓ Presente | Punto di riferimento per geolocalizzazione e contesto temporale |
-| **Solo-Tempo (T)** | ✗ Assente | ✓ Presente | Posizionata cronologicamente; posizione ereditata dagli anchor più vicini |
-| **Nuda (B)** | ✗ Assente | ✗ Assente | Nessun metadato; si affida completamente all'affinità visiva con gli anchor più vicini |
+#### Step 2.2: Reverse Geocoding (Nominatim)
+Le foto con coordinate proprie vengono geocodificate con OpenStreetMap Nominatim (`https://nominatim.openstreetmap.org/reverse`, `zoom=18`, `layer=poi`, con dettagli dell'indirizzo e tag extra). L'indirizzo completo e leggibile del punto di interesse più vicino (`display_name`) viene salvato nella colonna `address`. Se il geocoding fallisce, l'indirizzo resta vuoto (`address_confidence = 4`). In questa versione non è definito alcun provider di fallback.
 
-#### Step 2.2: Estrazione EXIF & Reverse Geocoding (Solo Anchor)
-Per le **foto Anchor soltanto**, il backend esegue un'estrazione completa dei metadati:
-1.  **Metadati EXIF**: estrazione coordinate GPS (`GPSLatitude`, `GPSLongitude`, `GPSLatitudeRef`, `GPSLongitudeRef`).
-2.  **Reverse Geocoding (Nominatim)**: le coordinate vengono convertite in dati di posizione leggibili (città, regione, paese) usando OpenStreetMap Nominatim (`https://nominatim.openstreetmap.org/reverse`). In questa versione non è definito alcun provider di fallback.
+#### Step 2.3: Propagazione delle Posizioni
+Per ogni foto senza coordinate, il worker cerca l'Anchor più vicino **prima** e **dopo** di essa nella sequenza ordinata, e decide se ereditare la posizione di uno dei due usando due soglie: **150 m** (distanza di Haversine) e **1 ora**. Una data è considerata *affidabile* quando `date_confidence ≤ 2` (EXIF o filename).
 
-#### Step 2.3: Propagazione del Contesto (Avanti & Indietro)
-Una volta che gli Anchor sono identificati e arricchiti, il contesto viene propagato alle foto non-anchor:
+| Situazione | Regola | Confidenza risultante |
+|------------|--------|-----------------------|
+| Un solo Anchor (prima o dopo) | Eredita la sua posizione se la data della foto non è affidabile, oppure se dista al massimo 1 ora dall'Anchor | 3 |
+| Due Anchor, data non affidabile | Conta solo l'ordine: eredita dall'Anchor **visivamente più simile** (similarità coseno SigLIP 2) | 2 se gli Anchor distano tra loro al massimo 150 m e 1 ora, altrimenti 3 |
+| Due Anchor, data affidabile, entrambi entro 1 ora | Si assume un **moto uniforme** tra gli Anchor: lo spostamento dall'Anchor più vicino nel tempo è stimato come `distanza × gap più vicino / gap totale`; eredita da quell'Anchor | 2 se lo spostamento stimato è ≤ 150 m, altrimenti 3 |
+| Due Anchor, data affidabile, solo uno entro 1 ora, oppure Anchor entro 150 m tra loro | Eredita dall'Anchor più vicino nel tempo | 3 |
+| Ogni altro caso | Nessuna eredità: la foto resta senza posizione | 4 |
 
-1.  **Passata in Avanti**: per ogni foto senza GPS, il backend percorre in avanti la sequenza ordinata per trovare l'Anchor più vicino e ne eredita la posizione geocodificata. Questo modella l'assunzione realistica che una foto scattata poco dopo una posizione nota sia probabilmente ancora in quella posizione.
-2.  **Passata all'Indietro**: in modo analogo, il backend percorre all'indietro per propagare il contesto di posizione dagli Anchor successivi alle foto precedenti che li precedono.
-3.  **Tie-Breaking per Affinità Visiva**: quando una foto Nuda (Classe B, senza alcun metadato) si trova tra due Anchor con posizioni *diverse*, il sistema calcola la **similarità coseno CLIP** tra la foto Nuda e ciascun Anchor candidato. La foto Nuda eredita la posizione dell'Anchor con similarità visiva più alta.
+Quando una posizione viene ereditata, viene ereditato anche l'indirizzo dell'Anchor, con lo stesso livello di confidenza. Le foto rimaste senza posizione vengono segnalate nello Storyboard Editor (Fase 4).
 
 #### Step 2.4: Generazione di Descrizioni Contestuali (LangChain/LangGraph + Modello Vision)
-Per ogni foto (indipendentemente dalla classe), il backend genera un tag descrittivo usando il **modello multimodale remoto configurato** con la **finestra contestuale tripla scorrevole**, ora arricchita dal contesto propagato dagli Anchor.
+Per ogni foto senza descrizione, il worker genera una descrizione fattuale usando il **modello multimodale remoto configurato** con la **finestra contestuale tripla scorrevole**, arricchita dalla posizione propagata. Il modello viene eseguito come agente LangChain, con ritentativi automatici delle chiamate ai tool fallite.
 
-* Per analizzare l'immagine corrente N, il backend Python costruisce una chiamata LangChain/LangGraph all'endpoint chat-completions compatibile OpenAI configurato, passando:
-    * l'**Immagine Corrente N**.
+* Per analizzare l'immagine corrente N, il worker chiama l'endpoint chat-completions compatibile OpenAI configurato, passando:
+    * l'**Immagine Corrente N**, con il suo nome file (che può contenere indizi, es. `colosseum_night.jpg`).
     * l'**Immagine Precedente N-1** insieme alla sua **descrizione già generata** (se N > 1).
     * l'**Immagine Successiva N+1** come puro contesto visivo (se N < numero totale di foto).
-    * il **Nome Tour** fornito dall'utente.
-    * la **Posizione Ereditata** (dalla propagazione Anchor o geocodifica GPS diretta).
-* Il modello di arricchimento selezionato **deve supportare immagini**. Il wizard di setup e la validazione nelle Impostazioni rifiutano modelli non vision per questo ruolo.
-* Il prompt istruisce il modello a riconoscere la continuità logica, usare il contesto di posizione e sfruttare il titolo del tour:
-  > *"L'utente è attualmente in un tour intitolato: **[Nome Tour]**. La posizione stimata è: **[Posizione]**. Ti sto mostrando l'immagine corrente (Foto B), inserita in questa sequenza cronologica. Ti fornisco anche la foto precedente (Foto A), descritta come '[Descrizione A]', e la foto successiva (Foto C). Descrivi cosa raffigura la Foto B, tenendo conto del contesto del tour '[Nome Tour]', della posizione '[Posizione]' e delle foto adiacenti. Se la Foto B mostra un dettaglio ravvicinato di un soggetto visibile nella Foto A o che porta alla Foto C, dichiaralo esplicitamente nella descrizione (es., 'Questo è un dettaglio ravvicinato della colonna sinistra del portico della chiesa che abbiamo appena visto...')."*
-* **Policy di Utilizzo Tool (LangGraph)**: i tool non vengono attivati singolarmente nelle impostazioni. Sono automaticamente disponibili quando le condizioni di esecuzione sono soddisfatte. Esempio: il recupero di articoli/contesto da Wikipedia viene invocato solo quando è disponibile la connettività internet, così il modello riceve un contesto fattuale più ampio per interpretare ciò che sta vedendo.
+    * il **Nome Tour** fornito dall'utente e la **lingua della descrizione**.
+    * la **posizione GPS**, l'**indirizzo** e la **data**, ciascuno segnalato come *stimato* quando non proviene dai metadati propri della foto.
+    * gli **articoli Wikipedia sui luoghi vicini alla posizione GPS** (geosearch, fino a 3 articoli convertiti in Markdown, senza sezioni come note, bibliografia e collegamenti esterni).
+* **Utilizzo dei Tool (agente LangChain)**: il modello può chiamare il tool **`wikipedia_search_keyword`** (ricerca full-text su Wikipedia in inglese) per identificare o confermare un soggetto specifico — un monumento, una chiesa, un'opera d'arte, una piazza — non coperto dagli articoli forniti, con al massimo 3 ricerche.
+* Il prompt di sistema istruisce il modello a:
+    * partire da ciò che è effettivamente visibile: soggetto principale, tipo di inquadratura (panorama, facciata, interno, dettaglio ravvicinato, persone, cibo, ...) ed elementi notevoli (architettura, opere d'arte, iscrizioni, paesaggio);
+    * identificare il luogo o il soggetto combinando l'immagine con i metadati e gli articoli, dichiarandolo quando l'identificazione è probabile ma non certa (*"probabilmente ..."*), e senza mai inventare nomi, date o fatti storici;
+    * aggiungere al massimo uno o due brevi fatti storici o artistici, solo su ciò che la foto mostra;
+    * fidarsi dell'immagine quando contraddice i metadati stimati;
+    * usare le foto adiacenti solo come contesto, senza descriverle (es. per riconoscere che la foto è un dettaglio ravvicinato di un soggetto visto nella precedente, o una panoramica di ciò che segue);
+    * rispondere solo con la descrizione: da 3 a 6 frasi nella lingua richiesta, senza titoli, preamboli, elenchi o markdown.
+* Per questo ruolo l'operatore deve configurare un modello che **supporti input immagine**.
 
 ### Fase 3: Clustering Ibrido & Generazione Storyboard
-Il backend organizza la sequenza ordinata di foto in **Sezioni/Scene** logiche usando una strategia di **Clustering Ibrido**. Poiché le raccolte di foto reali hanno livelli diversi di completezza dei metadati, il sistema applica l'algoritmo di clustering più appropriato per foto, con fallback graduale quando GPS o timestamp non sono disponibili.
+Il worker organizza la sequenza ordinata di foto in **Sezioni/Scene** logiche usando una strategia di **Clustering Ibrido**. Poiché le raccolte di foto reali hanno livelli diversi di completezza dei metadati, il sistema applica l'algoritmo di clustering più appropriato a ciascuna coppia di foto adiacenti, con fallback graduale quando GPS o timestamp non sono disponibili.
 
 #### Gerarchia delle Strategie di Clustering
 
-Il backend prova ogni strategia in ordine di priorità per ciascuna coppia di foto adiacenti. Viene usata la prima strategia con dati sufficienti per entrambe le foto:
+Il worker prova ogni strategia in ordine di priorità per ciascuna coppia di foto adiacenti. Viene usata la prima strategia con dati sufficienti per entrambe le foto:
 
 | Priorità | Strategia | Requisiti | Metodo |
 |----------|----------|-------------|--------|
 | **1** | **Clustering Spazio-Tempo** | Entrambe le foto hanno GPS + Timestamp | raggio ~100m, finestra scorrevole ~15 min |
-| **2** | **Clustering Tempo + Visivo** | Entrambe le foto hanno Timestamp (senza GPS) | finestra temporale + similarità coseno CLIP |
-| **3** | **Rilevamento Cambiamenti Semantici** | Nessun GPS, nessun Timestamp (foto Nude) | cali di similarità coseno CLIP tra foto adiacenti |
+| **2** | **Clustering Tempo + Visivo** | Entrambe le foto hanno Timestamp (senza GPS) | finestra temporale + similarità coseno degli embedding |
+| **3** | **Rilevamento Cambiamenti Semantici** | Nessun GPS, nessun Timestamp | cali di similarità coseno degli embedding tra foto adiacenti |
 
 #### Strategia 1: Clustering Spazio-Tempo (GPS + Timestamp)
 Il metodo di clustering ideale. Due foto adiacenti vengono raggruppate nella stessa sezione se:
@@ -156,47 +179,44 @@ Il metodo di clustering ideale. Due foto adiacenti vengono raggruppate nella ste
 Una nuova sezione viene creata quando il gap temporale supera la soglia o la distanza spaziale indica un cambio significativo di posizione.
 
 #### Strategia 2: Clustering Tempo + Visivo (Solo Timestamp, Senza GPS)
-Quando le foto hanno timestamp ma non coordinate GPS, il sistema combina prossimità temporale e similarità visiva CLIP:
+Quando le foto hanno timestamp ma non coordinate GPS, il sistema combina prossimità temporale e similarità visiva degli embedding:
 - Due foto adiacenti vengono raggruppate se il loro delta temporale è entro **30 minuti**.
-- Se il delta temporale è borderline (tra 15–120 minuti), un controllo di **similarità coseno CLIP** agisce da tie-breaker: foto con alta similarità visiva (> 0.7) restano insieme anche con un gap temporale più lungo (es. scatti interni dello stesso museo distribuiti nel tempo), mentre foto visivamente dissimili attivano una separazione di sezione.
+- Se il delta temporale è borderline (tra 15–120 minuti), un controllo di **similarità coseno** agisce da tie-breaker: foto con alta similarità visiva (> 0.7) restano insieme anche con un gap temporale più lungo (es. scatti interni dello stesso museo distribuiti nel tempo), mentre foto visivamente dissimili attivano una separazione di sezione.
 
-#### Strategia 3: Rilevamento Cambiamenti Semantici (Nessun GPS, Nessun Timestamp — Foto Nude)
-Quando le foto non hanno né GPS né timestamp affidabili, il clustering si basa puramente sulla semantica visiva. Il sistema calcola embedding CLIP per tutte le coppie di foto adiacenti e rileva **Punti di Cambiamento Semantico** — posizioni in cui la similarità coseno cala bruscamente, indicando una probabile transizione di scena/capitolo.
+#### Strategia 3: Rilevamento Cambiamenti Semantici (Nessun GPS, Nessun Timestamp)
+Quando le foto non hanno né GPS né timestamp affidabili, il clustering si basa puramente sulla semantica visiva. Il sistema usa gli embedding persistiti di tutte le coppie di foto adiacenti e rileva **Punti di Cambiamento Semantico** — posizioni in cui la similarità coseno cala bruscamente, indicando una probabile transizione di scena/capitolo.
 
 L'algoritmo:
-1. Calcola la similarità coseno CLIP per ogni coppia adiacente $(i, i+1)$.
+1. Calcola la similarità coseno per ogni coppia adiacente $(i, i+1)$.
 2. Identifica **minimi locali** nella curva di similarità dove $\text{sim}(i, i+1) < \mu - k \cdot \sigma$ (cioè la similarità scende significativamente sotto la media mobile).
 3. Posiziona i confini di sezione in questi punti di cambiamento rilevati.
 
-#### Entry Point Unificato di Clustering Ibrido
-La funzione di clustering top-level attraversa la sequenza ordinata di foto e seleziona automaticamente la strategia migliore in base ai metadati disponibili:
-- Se più del 50% delle foto ha coordinate GPS → **Clustering Spazio-Tempo** (Strategia 1).
-- Se più del 50% ha timestamp (ma non GPS) → **Clustering Tempo + Visivo** (Strategia 2).
-- Altrimenti → **Rilevamento Cambiamenti Semantici** (Strategia 3).
+#### Scelta della Strategia per Coppia
+La funzione di clustering attraversa la sequenza ordinata di foto e, per ogni coppia adiacente, usa la prima strategia della gerarchia di cui entrambe le foto soddisfano i requisiti. Lo scopo è trovare le **linee di separazione tra eventi e attrazioni**: ogni coppia resta nella stessa sezione oppure segna un confine di sezione. In una raccolta con metadati misti, tratti diversi dello stesso tour possono quindi essere separati da strategie diverse.
 
 > **Filosofia Plug & Play**: questo approccio ibrido incarna il principio di design centrale di TripTour — l'utente carica semplicemente le sue foto, e il sistema svolge automaticamente il miglior lavoro possibile. Lo Storyboard Editor (Fase 4) diventa quindi un'esperienza di rifinitura piacevole invece che un passaggio obbligato di correzione.
 
 #### Generazione Metadati di Sezione
 Dopo il clustering, ogni sezione viene automaticamente arricchita:
-1.  Viene sintetizzato un **titolo di sezione** dai tag più frequenti e dalla posizione dominante (es. "Ingresso Monumentale — Piazza del Duomo").
+1.  Viene sintetizzato un **titolo di sezione** dalle descrizioni delle foto e dalla posizione dominante (es. "Ingresso Monumentale — Piazza del Duomo").
 2.  Viene generata una **auto-descrizione preliminare** fondendo le descrizioni contestualizzate delle foto costituenti la sezione.
-3.  Le foto senza coordinate ereditate vengono segnalate nella UI (evidenziazione rossa) per la correzione manuale nella Fase 4.
+3.  Le foto senza posizione (`gps_confidence = 4`) vengono segnalate nella UI (evidenziazione rossa) per la correzione manuale nella Fase 4.
 
 ### Fase 4: Storyboard Editor (Interfaccia Utente)
-Il frontend Svelte riceve dal backend la struttura dello storyboard e mostra una UI interattiva:
+Lo Storyboard Editor è un componente Svelte montato nella pagina del tour: carica la struttura dello storyboard dall'API JSON e salva ogni modifica tramite la stessa API.
 * Le foto sono raggruppate visivamente nelle sezioni/fasi calcolate.
-* **Trasparenza Anchor & Metadati**: ogni foto mostra un piccolo badge che indica la sua classificazione (🟢 Anchor / 🟡 Solo-Tempo / 🔴 Nuda) e la fonte di ordinamento usata nella Fase 0 (EXIF, regex filename, filesystem o ordine di importazione). Questo consente agli utenti di capire subito quali foto hanno metadati affidabili e quali sono state posizionate euristicamente.
-* **Gestione Errori GPS / Posizione**: le foto senza coordinate (classi Nuda e Solo-Tempo con posizione ereditata non risolta) sono evidenziate in rosso. L'utente può digitare manualmente una posizione per la fase o trascinare foto in una fase esistente.
+* **Trasparenza Anchor & Metadati**: ogni foto mostra piccoli badge che indicano se è un Anchor e la confidenza di data, posizione e indirizzo (🟢 livello 1, metadati propri / 🟡 livelli 2–3, stimati / 🔴 livello 4, assenti), insieme alla fonte della data usata nella Fase 0 (EXIF, filename, data del file o nessuna). Questo consente agli utenti di capire subito quali foto hanno metadati affidabili e quali sono state posizionate euristicamente.
+* **Gestione Errori GPS / Posizione**: le foto senza posizione sono evidenziate in rosso. L'utente può digitare manualmente una posizione per la fase o trascinare foto in una fase esistente.
 * **Interattività Completa**: gli utenti possono trascinare foto per riordinarle tra sezioni, creare nuove sezioni vuote, rinominarle, eliminare scatti indesiderati o modificare manualmente descrizioni e posizioni ereditate.
-* **Modifica in Blocco**: possibilità di selezionare più foto contemporaneamente per assegnare loro la stessa posizione o gli stessi tag con un solo clic.
-* **Ricalcola**: un pulsante consente di rieseguire la Fase 3 (Clustering Ibrido) se gli utenti vogliono reimpostare il raggruppamento automatico dopo aver effettuato modifiche manuali a ordine o metadati.
+* **Modifica in Blocco**: possibilità di selezionare più foto contemporaneamente per assegnare loro la stessa posizione con un solo clic.
+* **Ricalcola**: un pulsante consente di rieseguire la Fase 3 (Clustering Ibrido), come nuovo job in background, se gli utenti vogliono reimpostare il raggruppamento automatico dopo aver effettuato modifiche manuali a ordine o metadati.
 
 ### Fase 5: Sintesi Narrativa e Tagging Temporale (LangChain/LangGraph)
 Una volta che l'utente conferma lo storyboard modificato:
-1.  Il backend Python costruisce una pipeline di generazione con LangChain/LangGraph usando il **modello narrativo** configurato (focalizzato sul testo).
-2.  Tutte le informazioni dello storyboard (posizioni, descrizioni dettagliate e contestualizzate, ordine cronologico), insieme a **Nome Tour** e **Lingua di Destinazione**, vengono aggregate e inviate all'endpoint selezionato dall'utente.
+1.  Il worker costruisce una pipeline di generazione con LangChain/LangGraph usando il **modello narrativo** (focalizzato sul testo) configurato sul server.
+2.  Tutte le informazioni dello storyboard (posizioni, descrizioni dettagliate e contestualizzate, ordine cronologico), insieme a **Nome Tour** e **Lingua di Destinazione**, vengono aggregate e inviate all'endpoint configurato.
 3.  Il modello elabora questo testo strutturale e il nome del tour (es. *"Vacanza a Roma 2026"*) e genera lo script narrativo finale direttamente nella lingua di destinazione.
-4.  **Sincronizzazione**: il modello incorpora nel testo tag inline speciali per indicare esattamente quando l'interfaccia deve passare alla foto successiva.
+4.  **Sincronizzazione**: il modello incorpora nel testo tag inline speciali per indicare esattamente quando il player deve passare alla foto successiva.
 
 * *Esempio di output LLM:*
     > `[photo_001.jpg] Benvenuti a Palazzo Vecchio, uno dei simboli iconici di Firenze. [photo_002.jpg] Avvicinandoci al portale principale, risalta la maestosa copia del David di Michelangelo. [photo_003.jpg] Se osserviamo da vicino i dettagli in pietra scolpita sulla sinistra...`
@@ -205,13 +225,13 @@ Una volta che l'utente conferma lo storyboard modificato:
 
 ## 3. Architettura di Orchestrazione AI
 
-TripTour separa l'indicizzazione visiva locale dall'orchestrazione dei modelli:
+TripTour separa l'indicizzazione visiva locale dall'orchestrazione dei modelli. Entrambe vengono eseguite sul server, all'interno dei worker della pipeline.
 
 ### 3.1 Layer Locale di Embedding (Transformers)
-Solo i carichi di lavoro di embedding passano attraverso modelli `transformers` locali di Hugging Face:
-1.  **Fase 1 (Deduplicazione)**: embedding CLIP + punteggio qualità Laplaciano.
-2.  **Fase 2.3 (Tie-Breaking)**: riuso degli embedding CLIP persistiti per la disambiguazione anchor.
-3.  **Fase 3 (Clustering)**: riuso degli embedding CLIP persistiti per Tempo+Visivo e Rilevamento Cambiamenti Semantici.
+Solo i carichi di lavoro di embedding passano attraverso un modello `transformers` locale di Hugging Face: `google/siglip2-base-patch16-512` (SigLIP 2). I suoi pesi sono in cache in `.model_cache`, viene caricato una sola volta per processo worker e gira su CPU o su GPU CUDA a seconda della build di PyTorch installata (`pytorch-cpu.txt` / `pytorch-cuda.txt`). Viene usato in:
+1.  **Fase 1 (Deduplicazione)**: embedding + punteggio qualità Laplaciano.
+2.  **Step 2.3 (Tie-Breaking)**: riuso degli embedding persistiti per scegliere tra due Anchor.
+3.  **Fase 3 (Clustering)**: riuso degli embedding persistiti per Tempo+Visivo e Rilevamento Cambiamenti Semantici.
 
 ### 3.2 Layer di Inferenza Remota (LangChain/LangGraph)
 Tutte le attività generative/orchestrazione modello vengono eseguite tramite un'astrazione client compatibile OpenAI:
@@ -219,76 +239,94 @@ Tutte le attività generative/orchestrazione modello vengono eseguite tramite un
 2.  **Modello di Generazione Narrativa**: usato in Fase 5, ottimizzato per output testuali long-form.
 3.  **Agnosticismo Endpoint**: può essere configurato qualsiasi endpoint compatibile (OpenAI, OpenRouter, gateway vLLM self-hosted, bridge compatibili Ollama, ecc.).
 
-### 3.3 Lifecycle Primo Avvio e Impostazioni
-1.  Se manca la configurazione AI, l'avvio viene reindirizzato a una schermata di setup obbligatoria.
-2.  L'app salva URL endpoint, credenziali API cifrate/offuscate e identificatori modello tramite **PySide6 QSettings**.
-3.  Un pannello impostazioni dedicato consente di aggiornare in qualsiasi momento le mappature provider/modello.
-4.  Le regole di validazione impongono che il modello di arricchimento sia vision-capable.
+### 3.3 Orchestrazione dei Workflow (LangGraph)
+Le fasi della pipeline sono modellate come workflow `StateGraph` di LangGraph, eseguiti dai worker della pipeline:
+1.  **`PreFilterWorkflow`**: ordinamento per data → rimozione duplicati (Fasi 0–1).
+2.  **`EnrichmentWorkflow`**: propagazione delle posizioni → generazione delle descrizioni (Fase 2).
+3.  Il clustering (Fase 3) e la sintesi narrativa (Fase 5) sono modellati come workflow allo stesso modo.
+
+### 3.4 Configurazione AI Lato Server
+1.  URL endpoint, chiave API e identificativo del modello di arricchimento e del modello narrativo sono definiti dall'operatore nella configurazione del server (variabili d'ambiente / file `.env`). Non vengono mai salvati nel database né inviati al browser.
+2.  Gli utenti non configurano nulla: non esistono un wizard di setup né una pagina di impostazioni AI.
+3.  All'avvio il servizio valida la configurazione con una chiamata di test leggera e verifica che il modello di arricchimento sia vision-capable.
 
 ---
 
-## 4. Gestione Database SQLite & Percorso Persistente
+## 4. Archiviazione dei Dati
 
-Per garantire persistenza e portabilità dei dati (prevenendo perdita dati se il binario dell'applicazione viene aggiornato o spostato), il file database `triptour.db` **non viene salvato accanto all'eseguibile**. Invece, viene scritto in una cartella dati applicazione dedicata all'utente, gestita in modo cross-platform.
+| Componente | Contenuto |
+|------------|-----------|
+| **MariaDB** | Dati persistenti: utenti, tour, immagini, scene |
+| **Redis** | Sessioni utente; opzionalmente coda di job e cache dei risultati delle API esterne |
+| **Storage foto** | Foto caricate e pacchetti esportati |
 
-### Risoluzione Dinamica del Percorso in Python
-Il backend Python calcola il percorso appropriato all'avvio dell'applicazione. Vengono usati percorsi standard per ogni sistema operativo:
-* **Windows**: `%APPDATA%/TripTour/triptour.db`
-* **macOS**: `~/Library/Application Support/TripTour/triptour.db`
-* **Linux**: `~/.local/share/triptour/triptour.db`
+### 4.1 Sessioni Utente (Redis)
+Le sessioni sono lato server e identificano l'utente autenticato (Sezione 7.1): il browser conserva solo un cookie di sessione opaco (`HttpOnly`, `Secure`, `SameSite`), mentre i dati di sessione risiedono in Redis con una scadenza. In questo modo il backend resta stateless, e più istanze del backend possono servire lo stesso utente.
 
-### Schema del Database Locale
+### 4.2 Storage delle Foto
+Le foto caricate vengono salvate dal backend in uno storage lato server. La colonna `images.path` contiene la posizione del file salvato, mentre `filename` conserva il nome originale del file, usato come indizio nella Fase 2 e nei tag narrativi della Fase 5. I percorsi nello storage sono sempre generati dal server, mai presi dal client.
+
+### 4.3 Schema del Database
+Lo schema è definito dai modelli SQLAlchemy in `app/models.py` e creato a partire da essi (`Base.metadata.create_all`). Il DDL seguente è generato dai modelli attuali:
 
 ```sql
 -- Tabella Tour Virtuali
 CREATE TABLE tours (
-    id INTEGER PRIMARY KEY,       -- Id intero auto-incrementale
-    title TEXT NOT NULL,          -- Titolo del tour
-    language TEXT NOT NULL,       -- Lingua selezionata per il tour (es. "it", "en")
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Tabella Media/Foto
-CREATE TABLE images (
-    id INTEGER PRIMARY KEY,       -- Id intero auto-incrementale
-    id_tour INTEGER NOT NULL,     -- Chiave esterna collegata al tour
-    path TEXT NOT NULL,           -- Percorso immagine su disco
-    filename TEXT NOT NULL,       -- Nome file
-    latitude REAL,                -- Nullable
-    longitude REAL,               -- Nullable
-    address TEXT,                 -- Nullable
-    date TIMESTAMP,               -- Nullable
-    description TEXT,             -- Nullable
-    laplacian_variance REAL NOT NULL,
-    embedding JSON,               -- Memorizzato tramite TensorJSON
-    FOREIGN KEY(id_tour) REFERENCES tours(id)
+    id INTEGER NOT NULL,                 -- Chiave primaria auto-incrementale
+    title VARCHAR NOT NULL,              -- Nome del tour, passato anche ai modelli AI
+    language VARCHAR NOT NULL,           -- Codice lingua del tour (es. "it", "en")
+    created_at DATETIME NOT NULL,        -- Impostata dall'ORM all'inserimento
+    PRIMARY KEY (id)
 );
 
 -- Tabella Fasi/Scene Generate
 CREATE TABLE scenes (
-    id INTEGER PRIMARY KEY,
-    id_tour INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    FOREIGN KEY(id_tour) REFERENCES tours(id)
+    id INTEGER NOT NULL,                 -- Chiave primaria auto-incrementale
+    id_tour INTEGER NOT NULL,            -- Tour a cui appartiene la scena
+    position INTEGER NOT NULL,           -- Ordine della scena nel tour (da 0)
+    title VARCHAR NOT NULL,              -- Titolo della scena
+    PRIMARY KEY (id),
+    FOREIGN KEY(id_tour) REFERENCES tours (id)
 );
 
--- Tabella di Giunzione che collega Foto e Scene
-CREATE TABLE scene_images (
-    id_scene INTEGER NOT NULL,
-    id_image INTEGER NOT NULL,
-    PRIMARY KEY (id_scene, id_image),
-    FOREIGN KEY(id_scene) REFERENCES scenes(id),
-    FOREIGN KEY(id_image) REFERENCES images(id)
+-- Tabella Foto
+CREATE TABLE images (
+    id INTEGER NOT NULL,                 -- Chiave primaria auto-incrementale
+    id_tour INTEGER NOT NULL,            -- Tour a cui appartiene la foto
+    id_scene INTEGER,                    -- Scena a cui appartiene la foto (vuota fino alla Fase 3)
+    position INTEGER,                    -- Ordine della foto nella sua scena (da 0)
+    path VARCHAR NOT NULL,               -- Posizione del file salvato
+    filename VARCHAR NOT NULL,           -- Nome originale del file
+    mime VARCHAR NOT NULL,               -- MIME type (es. "image/jpeg")
+    latitude DOUBLE,                     -- Latitudine propria o ereditata
+    longitude DOUBLE,                    -- Longitudine propria o ereditata
+    gps_confidence INTEGER NOT NULL,     -- 1 = EXIF, 2-3 = ereditata, 4 = assente
+    address VARCHAR,                     -- Indirizzo geocodificato o ereditato
+    address_confidence INTEGER NOT NULL, -- 1 = geocodificato, 2-3 = ereditato, 4 = assente
+    date DATETIME,                       -- Data di scatto
+    date_confidence INTEGER NOT NULL,    -- 1 = EXIF, 2 = filename, 3 = data file, 4 = assente
+    description VARCHAR,                 -- Descrizione generata nella Fase 2
+    laplacian_variance DOUBLE NOT NULL,  -- Punteggio di nitidezza (Fase 1)
+    embedding JSON,                      -- Embedding SigLIP 2, memorizzato tramite TensorJSON
+    PRIMARY KEY (id),
+    FOREIGN KEY(id_tour) REFERENCES tours (id),
+    FOREIGN KEY(id_scene) REFERENCES scenes (id)
 );
 ```
 
+* **Relazioni**: un tour ha molte immagini e molte scene; ogni foto appartiene al massimo a una scena, e una scena contiene molte foto.
+* **Ordinamento**: le colonne `position` sono mantenute aggiornate dalle ordering list di SQLAlchemy (`ordering_list`): viene salvato l'ordine in memoria delle scene di un tour e delle foto di una scena, e spostare una foto o una scena rinumera le posizioni. La sequenza completa del tour è data dalle foto di ogni scena, scena per scena.
+* **`embedding`**: il tipo personalizzato `TensorJSON` converte un `torch.Tensor` in un array JSON di valori `float32` (preservandone la forma) e viceversa.
+* **Colonne di confidenza**: il significato dei livelli è descritto nella Fase 0 e nello Step 2.3.
+
 ---
 
-## 5. Generazione e Struttura del Pacchetto Tour
+## 5. Player del Tour & Esportazione del Pacchetto
 
-Al completamento, il tour viene esportato in una cartella strutturata sul disco locale dell'utente, progettata per essere auto-contenuta, interattiva e facilmente riproducibile in qualsiasi browser.
+Una volta generata la narrazione, il tour può essere riprodotto direttamente nel browser, nella pagina player del servizio, oppure esportato come pacchetto auto-contenuto.
 
-### Struttura della Cartella Esportata:
+### Struttura del Pacchetto Esportato
+Il pacchetto viene scaricato come archivio ZIP, progettato per essere auto-contenuto, interattivo e facilmente riproducibile in qualsiasi browser:
 ```text
 [Tour_Name]/
 ├── index.html          # Player interattivo (HTML5 + CSS + JS compilato)
@@ -296,29 +334,44 @@ Al completamento, il tour viene esportato in una cartella strutturata sul disco 
 ├── css/
 │   └── style.css       # Stili layout e transizioni (effetto cinematografico Ken Burns)
 └── images/
-    ├── photo_001.jpg   # Immagini del tour ottimizzate
+    ├── photo_001.jpg   # Immagini del tour ottimizzate (ridimensionate, senza metadati EXIF)
     ├── photo_002.jpg
     └── ...
 ```
 
-### Funzionalità del Player Esportato (`index.html`):
-1.  **Lettura Narrata (TTS)**: sfrutta la **Web Speech API** nativa del browser, gratuita e offline, per leggere ad alta voce il testo della scena attiva nella lingua scelta dall'utente.
+### Funzionalità del Player
+1.  **Lettura Narrata (TTS)**: sfrutta la **Web Speech API** nativa e gratuita del browser per leggere ad alta voce il testo della scena attiva nella lingua del tour, senza sintesi vocale lato server. Le voci disponibili dipendono dal browser e dal sistema operativo.
 2.  **Transizioni Foto Sincronizzate**: un parser JS leggero scandisce il testo narrativo per tag come `[photo_001.jpg]`. Man mano che il motore Speech Synthesis avanza nelle frasi pronunciate, attiva transizioni visive per mantenere la foto attiva in perfetta sincronia.
 3.  **Transizioni Cinematografiche (Effetto Ken Burns)**: le foto sono mostrate a schermo intero con animazioni pan e zoom fluide guidate da CSS, simulando un documentario di alta qualità. Questo mantiene alto il coinvolgimento del pubblico senza salti improvvisi sulla mappa o discrepanze nelle coordinate.
 
 ---
 
-## 6. Note su Connettività e Compatibilità
+## 6. Note Operative e di Compatibilità
 
-1.  TripTour **non è completamente offline by design** in questa versione perché arricchimento e generazione narrativa si basano su un endpoint compatibile OpenAI configurato dall'utente.
-2.  I deployment solo locali restano possibili quando l'utente punta l'app a un endpoint self-hosted/locale (per esempio un gateway locale intorno a Ollama o vLLM).
-3.  L'app è agnostica rispetto all'endpoint: la compatibilità si basa sul comportamento API stile OpenAI (chat/completions, supporto multimodale per il modello di arricchimento).
+1.  **Dipendenze esterne**: arricchimento e narrazione si basano sull'endpoint AI configurato dall'operatore, il reverse geocoding su Nominatim e gli articoli di contesto sull'API di Wikipedia.
+2.  **Agnosticismo dell'endpoint**: la compatibilità si basa sul comportamento API stile OpenAI (chat/completions, supporto multimodale per il modello di arricchimento). L'operatore può usare un provider commerciale o un gateway self-hosted (vLLM, compatibile Ollama) sulla propria infrastruttura.
+3.  **Policy d'uso di terze parti**: l'istanza pubblica di Nominatim consente al massimo 1 richiesta al secondo e richiede uno User-Agent identificativo; anche l'API di Wikipedia lo richiede e applica dei rate limit (le richieste vengono ritentate, rispettando `Retry-After` in caso di HTTP 429). Con molti utenti contemporanei, le richieste vanno limitate e messe in cache (es. in Redis), oppure spostate su un geocoder self-hosted o commerciale.
+4.  **Metadati di posizione all'upload**: alcuni browser mobili e selettori di foto del sistema operativo rimuovono i dati di posizione dalle foto prima di caricarle. Queste foto arrivano al server senza GPS e si affidano alla propagazione delle posizioni (Step 2.3).
+5.  **Costi AI**: poiché l'AI è configurata lato server, ogni chiamata di arricchimento e narrazione è a carico dell'operatore; servono quindi dei limiti per utente (Sezione 7.1).
 
 ---
 
-## 7. Utility di Sviluppo: Fill Settings
+## 7. Account Utente & Evoluzione Futura
 
-Lo script `scripts/fill_settings.py` è un helper solo sviluppo per popolare rapidamente le impostazioni dell'applicazione da prompt terminale.
+### 7.1 Account Utente
+Il servizio è disponibile solo per gli utenti registrati.
+* **Registrazione e login**: a parte le pagine di registrazione e login, ogni pagina e ogni chiamata API richiede una sessione autenticata, conservata in Redis (Sezione 4.1).
+* **Proprietà dei tour**: ogni tour appartiene all'utente che l'ha creato; il modello dati viene esteso con una tabella `users` e una chiave esterna `tours.id_user`. La homepage elenca i tour dell'utente, che possono essere riaperti in qualsiasi momento nello Storyboard Editor o nel player.
+* **Quote**: limiti per utente su numero di foto per tour, spazio di archiviazione e chiamate AI, per tenere sotto controllo i costi dell'operatore.
+
+### 7.2 Evoluzione Futura: Hosting dei Tour
+Gli utenti potranno pubblicare un tour completato, riproducibile a un URL pubblico servito dalla piattaforma, in alternativa all'esportazione del pacchetto. Ogni tour ha un livello di visibilità (privato, solo con link, pubblico); le foto pubblicate vengono ridimensionate e private dei metadati EXIF, così che le coordinate GPS degli originali non vengano esposte.
+
+---
+
+## 8. Utility di Sviluppo: Fill Settings
+
+Lo script `scripts/fill_settings.py` è un helper solo sviluppo per popolare rapidamente le impostazioni AI da prompt terminale.
 
 Eseguilo dalla root del progetto come modulo Python:
 

@@ -3,7 +3,8 @@ Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
 '''
 
 from datetime import datetime
-from sqlalchemy import select, ForeignKey, JSON, Table, Column
+from sqlalchemy import select, ForeignKey, JSON
+from sqlalchemy.ext.orderinglist import ordering_list
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase, relationship
 from sqlalchemy.types import TypeDecorator
 import torch
@@ -65,17 +66,11 @@ class TourModel(Base):
 	language: Mapped[str]
 	created_at: Mapped[datetime] = mapped_column(default=datetime.now)
 	images: Mapped[list['ImageModel']] = relationship(back_populates='tour')
-	scenes: Mapped[list['SceneModel']] = relationship(back_populates='tour')
+	# Le scene sono ordinate nel tour: ordering_list aggiorna position seguendo l'ordine della lista
+	scenes: Mapped[list['SceneModel']] = relationship(back_populates='tour', order_by='SceneModel.position', collection_class=ordering_list('position'))
 
 	def __repr__(self):
 		return f'Tour(id={self.id}, title="{self.title}", language="{self.language}", created_at="{self.created_at}")'
-
-scene_images_association = Table(
-	'scene_images',
-	Base.metadata,
-	Column('id_scene', ForeignKey('scenes.id'), primary_key=True),
-	Column('id_image', ForeignKey('images.id'), primary_key=True)
-)
 
 class ImageModel(Base):
 	__tablename__ = 'images'
@@ -83,6 +78,10 @@ class ImageModel(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	id_tour: Mapped[int] = mapped_column(ForeignKey('tours.id'))
 	tour: Mapped['TourModel'] = relationship(back_populates='images')
+	# Una foto appartiene al massimo a una scena: è vuota finché il clustering non l'ha assegnata
+	id_scene: Mapped[int | None] = mapped_column(ForeignKey('scenes.id'))
+	scene: Mapped['SceneModel | None'] = relationship(back_populates='images')
+	position: Mapped[int | None]
 	path: Mapped[str]
 	filename: Mapped[str]
 	mime: Mapped[str]
@@ -96,10 +95,9 @@ class ImageModel(Base):
 	description: Mapped[str | None]
 	laplacian_variance: Mapped[float]
 	embedding: Mapped['torch.Tensor | None'] = mapped_column(TensorJSON)
-	scenes: Mapped[list['SceneModel']] = relationship(secondary=scene_images_association, back_populates='images')
 
 	def __repr__(self):
-		return f'Image(id={self.id}, id_tour={self.id_tour}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, gps_confidence={self.gps_confidence}, address="{self.address}", address_confidence={self.address_confidence}, date="{self.date}", date_confidence={self.date_confidence}, description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
+		return f'Image(id={self.id}, id_tour={self.id_tour}, id_scene={self.id_scene}, position={self.position}, path="{self.path}", filename="{self.filename}", mime="{self.mime}", latitude={self.latitude}, longitude={self.longitude}, gps_confidence={self.gps_confidence}, address="{self.address}", address_confidence={self.address_confidence}, date="{self.date}", date_confidence={self.date_confidence}, description="{self.description}", laplacian_variance={self.laplacian_variance}, embedding={self.embedding})'
 
 class SceneModel(Base):
 	__tablename__ = 'scenes'
@@ -107,5 +105,6 @@ class SceneModel(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	id_tour: Mapped[int] = mapped_column(ForeignKey('tours.id'))
 	tour: Mapped['TourModel'] = relationship(back_populates='scenes')
-	images: Mapped[list['ImageModel']] = relationship(secondary=scene_images_association, back_populates='scenes')
+	position: Mapped[int]
+	images: Mapped[list['ImageModel']] = relationship(back_populates='scene', order_by='ImageModel.position', collection_class=ordering_list('position'))
 	title: Mapped[str]
