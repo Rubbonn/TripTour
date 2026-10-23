@@ -76,6 +76,14 @@ class EnrichmentWorkflow:
 					inherit_position(image, nearest_anchor, 3)
 			return images
 
+		def enrich_images(images: list[Image]) -> list[Image]:
+			from app.llm.vlm import Vlm
+			from app.llm.prompts import photo_enrichment_system_prompt, photo_enrichment_first_picture
+			vlm = Vlm()
+			for i, image in enumerate(images):
+				if image.description is not None:
+					continue
+
 		workflow.add_node('propagate_positions', lambda state: {'images': propagate_positions(state['images'])})
 		workflow.add_edge(START, 'propagate_positions')
 		workflow.add_edge('propagate_positions', END)
