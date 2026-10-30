@@ -1,0 +1,2 @@
+class TourRepository:
+	pass

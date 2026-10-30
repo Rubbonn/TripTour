@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 	from torch import Tensor
 
 class Image:
-	def __init__(self, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, gps_confidence: int, address: str | None, address_confidence: int, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
+	def __init__(self, id: int | None, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, gps_confidence: int, address: str | None, address_confidence: int, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
+		self.id = id
 		self.path = path
 		self.filename = filename
 		self.mime = mime
@@ -77,6 +78,7 @@ class Image:
 		laplacian_variance: float = cls._calc_laplacian_variance(path)
 
 		return cls(
+			id=None,  # This will be set by the database
 			path=path,
 			filename=filename,
 			mime=mime,
@@ -94,6 +96,7 @@ class Image:
 	@classmethod
 	def from_model(cls, model: ImageModel) -> 'Image':
 		return cls(
+			id=model.id,
 			path=model.path,
 			filename=model.filename,
 			mime=model.mime,
@@ -110,6 +113,7 @@ class Image:
 
 	def to_model(self) -> ImageModel:
 		return ImageModel(
+			id=self.id,
 			path=self.path,
 			filename=self.filename,
 			mime=self.mime,
