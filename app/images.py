@@ -3,7 +3,6 @@ Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
 '''
 
 from app.llm.embedders import get_image_embedder
-from app.models import ImageModel
 from app.utils import reverse_geocode
 from datetime import datetime
 from functools import cached_property
@@ -91,42 +90,6 @@ class Image:
 			description=description,
 			laplacian_variance=laplacian_variance,
 			embedding=None,
-		)
-
-	@classmethod
-	def from_model(cls, model: ImageModel) -> 'Image':
-		return cls(
-			id=model.id,
-			path=model.path,
-			filename=model.filename,
-			mime=model.mime,
-			gps_coordinates=(model.latitude, model.longitude) if model.latitude and model.longitude else None,
-			gps_confidence=model.gps_confidence,
-			address=model.address,
-			address_confidence=model.address_confidence,
-			date=model.date,
-			date_confidence=model.date_confidence,
-			description=model.description,
-			laplacian_variance=model.laplacian_variance,
-			embedding=model.embedding,
-		)
-
-	def to_model(self) -> ImageModel:
-		return ImageModel(
-			id=self.id,
-			path=self.path,
-			filename=self.filename,
-			mime=self.mime,
-			latitude=self.gps_coordinates[0] if self.gps_coordinates else None,
-			longitude=self.gps_coordinates[1] if self.gps_coordinates else None,
-			gps_confidence=self.gps_confidence,
-			address=self.address,
-			address_confidence=self.address_confidence,
-			date=self.date,
-			date_confidence=self.date_confidence,
-			description=self.description,
-			laplacian_variance=self.laplacian_variance,
-			embedding=self.embedding,
 		)
 
 	def read(self) -> bytes:

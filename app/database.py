@@ -30,5 +30,3 @@ class Database:
 
 
 db = Database()
-
-	
