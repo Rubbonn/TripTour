@@ -6,7 +6,7 @@ The service is made of a **Python backend** (web framework to be defined) that r
 
 TripTour uses a **hybrid AI architecture**, entirely server-side:
 - A **local Transformers model** on the server computes image embeddings (support for deduplication, position propagation and clustering).
-- **LangChain/LangGraph + OpenAI-compatible APIs** are used for multimodal enrichment and final narrative synthesis.
+- **LangChain + OpenAI-compatible APIs** are used for multimodal enrichment and final narrative synthesis.
 - Endpoint URL, API key and models (vision model + text model) are defined by the **service operator** in the server configuration. Users never deal with AI configuration.
 
 Access to the service requires a user account: each user creates and manages their own tours (see Section 7). Hosting users' tours is a possible future evolution.
@@ -28,7 +28,7 @@ Access to the service requires a user account: each user creates and manages the
         │                      │                      │
 ┌───────▼───────┐   ┌──────────▼──────────┐   ┌───────▼───────┐
 │     Redis     │   │  PIPELINE WORKER(S) │   │    MariaDB    │
-│    sessions   │   │ LangGraph workflows │   │   persistent  │
+│    sessions   │   │  LangChain agents   │   │   persistent  │
 │ (+ job queue) │   │ + SigLIP 2 embedder │   │      data     │
 └───────────────┘   └──────────┬──────────┘   └───────────────┘
                                │
@@ -138,7 +138,7 @@ For each photo without coordinates, the worker looks for the nearest Anchor **be
 
 When a position is inherited, the Anchor's address is inherited too, with the same confidence level. Photos left without a position are flagged in the Storyboard Editor (Phase 4).
 
-#### Step 2.4: Contextual Description Generation (LangChain/LangGraph + Vision Model)
+#### Step 2.4: Contextual Description Generation (LangChain + Vision Model)
 For each photo without a description, the worker generates a factual description using the configured **remote multimodal model** with the **sliding triple-context window**, enriched by the propagated position. The model runs as a LangChain agent, with automatic retries of failed tool calls.
 
 * To analyze the current image N, the worker calls the configured OpenAI-compatible chat-completions endpoint, passing:
@@ -211,9 +211,9 @@ The Storyboard Editor is a Svelte component mounted in the tour page: it loads t
 * **Bulk Editing**: ability to select multiple photos at once to assign them the same location in a single click.
 * **Recalculate**: a button allows users to re-run Phase 3 (Hybrid Clustering), as a new background job, if they want to reset automatic grouping after making manual adjustments to order or metadata.
 
-### Phase 5: Narrative Synthesis and Temporal Tagging (LangChain/LangGraph)
+### Phase 5: Narrative Synthesis and Temporal Tagging (LangChain)
 Once the user confirms the edited storyboard:
-1.  The worker builds a generation pipeline with LangChain/LangGraph using the **narrative model** (text-focused) configured on the server.
+1.  The worker builds a generation pipeline with LangChain using the **narrative model** (text-focused) configured on the server.
 2.  All storyboard information (locations, detailed and contextualized descriptions, chronological order) along with the **Tour Name** and **Target Language** are bundled and sent to the configured endpoint.
 3.  The model processes this structural text and the tour name (e.g., *"Rome Vacation 2026"*) and generates the final narrative script directly in the target language.
 4.  **Synchronization**: The model embeds special inline tags into the text to indicate exactly when the player should transition to the next photo.
@@ -233,19 +233,13 @@ Only embedding workloads run through a local Hugging Face `transformers` model: 
 2.  **Step 2.3 (Tie-Breaking)**: reuse of the persisted embeddings to choose between two Anchors.
 3.  **Phase 3 (Clustering)**: reuse of the persisted embeddings for Time+Visual and Semantic Change Detection.
 
-### 3.2 Remote Inference Layer (LangChain/LangGraph)
+### 3.2 Remote Inference Layer (LangChain)
 All generative/model-orchestration tasks run through an OpenAI-compatible client abstraction:
 1.  **Multimodal Enrichment Model**: used in Phase 2, must accept image inputs.
 2.  **Narrative Generation Model**: used in Phase 5, optimized for long-form text output.
 3.  **Endpoint Agnosticism**: any compatible endpoint can be configured (OpenAI, OpenRouter, self-hosted vLLM gateways, Ollama-compatible bridges, etc.).
 
-### 3.3 Workflow Orchestration (LangGraph)
-The pipeline phases are modeled as LangGraph `StateGraph` workflows, executed by the pipeline workers:
-1.  **`PreFilterWorkflow`**: date sorting → duplicate removal (Phases 0–1).
-2.  **`EnrichmentWorkflow`**: position propagation → description generation (Phase 2).
-3.  Clustering (Phase 3) and narrative synthesis (Phase 5) are modeled as workflows in the same way.
-
-### 3.4 Server-Side AI Configuration
+### 3.3 Server-Side AI Configuration
 1.  Endpoint URL, API key and model identifier of the enrichment model and of the narrative model are defined by the operator in the server configuration (environment variables / `.env` file). They are never stored in the database nor sent to the browser.
 2.  Users configure nothing: there is no setup wizard and no AI settings page.
 3.  At startup the service validates the configuration with a lightweight test call and checks that the enrichment model is vision-capable.
@@ -368,18 +362,6 @@ The service is available only to registered users.
 Users may publish a finished tour, playable at a public URL served by the platform, as an alternative to the package export. Each tour has a visibility level (private, link-only, public); published photos are resized and stripped of their EXIF metadata, so that the GPS coordinates of the originals are not exposed.
 
 ---
-
-## 8. Development Utility: Fill Settings
-
-The script `scripts/fill_settings.py` is a development-only helper to quickly populate the AI settings from terminal prompts.
-
-Run it from the project root as a Python module:
-
-```bash
-python -m scripts.fill_settings
-```
-
-Use module execution (`-m`) instead of running the file directly, so Python resolves package imports correctly (for example `from app.settings import ...`).
 
 ## License
 

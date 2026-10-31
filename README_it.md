@@ -6,7 +6,7 @@ Il servizio è composto da un **backend Python** (framework web da definire) che
 
 TripTour utilizza un'**architettura AI ibrida**, interamente lato server:
 - Un **modello Transformers locale** sul server calcola gli embedding delle immagini (supporto a deduplicazione, propagazione delle posizioni e clustering).
-- **LangChain/LangGraph + API compatibili OpenAI** sono usati per l'arricchimento multimodale e la sintesi narrativa finale.
+- **LangChain + API compatibili OpenAI** sono usati per l'arricchimento multimodale e la sintesi narrativa finale.
 - URL endpoint, chiave API e modelli (modello vision + modello testuale) sono definiti dall'**operatore del servizio** nella configurazione del server. Gli utenti non si occupano mai della configurazione AI.
 
 L'accesso al servizio richiede un account utente: ogni utente crea e gestisce i propri tour (vedi Sezione 7). L'hosting dei tour degli utenti è una possibile evoluzione futura.
@@ -28,7 +28,7 @@ L'accesso al servizio richiede un account utente: ogni utente crea e gestisce i 
         │                      │                      │
 ┌───────▼───────┐   ┌──────────▼──────────┐   ┌───────▼───────┐
 │     Redis     │   │   WORKER PIPELINE   │   │    MariaDB    │
-│    sessioni   │   │  workflow LangGraph │   │      dati     │
+│    sessioni   │   │   agenti LangChain  │   │      dati     │
 │  (+ coda job) │   │ + embedder SigLIP 2 │   │  persistenti  │
 └───────────────┘   └──────────┬──────────┘   └───────────────┘
                                │
@@ -138,7 +138,7 @@ Per ogni foto senza coordinate, il worker cerca l'Anchor più vicino **prima** e
 
 Quando una posizione viene ereditata, viene ereditato anche l'indirizzo dell'Anchor, con lo stesso livello di confidenza. Le foto rimaste senza posizione vengono segnalate nello Storyboard Editor (Fase 4).
 
-#### Step 2.4: Generazione di Descrizioni Contestuali (LangChain/LangGraph + Modello Vision)
+#### Step 2.4: Generazione di Descrizioni Contestuali (LangChain + Modello Vision)
 Per ogni foto senza descrizione, il worker genera una descrizione fattuale usando il **modello multimodale remoto configurato** con la **finestra contestuale tripla scorrevole**, arricchita dalla posizione propagata. Il modello viene eseguito come agente LangChain, con ritentativi automatici delle chiamate ai tool fallite.
 
 * Per analizzare l'immagine corrente N, il worker chiama l'endpoint chat-completions compatibile OpenAI configurato, passando:
@@ -211,9 +211,9 @@ Lo Storyboard Editor è un componente Svelte montato nella pagina del tour: cari
 * **Modifica in Blocco**: possibilità di selezionare più foto contemporaneamente per assegnare loro la stessa posizione con un solo clic.
 * **Ricalcola**: un pulsante consente di rieseguire la Fase 3 (Clustering Ibrido), come nuovo job in background, se gli utenti vogliono reimpostare il raggruppamento automatico dopo aver effettuato modifiche manuali a ordine o metadati.
 
-### Fase 5: Sintesi Narrativa e Tagging Temporale (LangChain/LangGraph)
+### Fase 5: Sintesi Narrativa e Tagging Temporale (LangChain)
 Una volta che l'utente conferma lo storyboard modificato:
-1.  Il worker costruisce una pipeline di generazione con LangChain/LangGraph usando il **modello narrativo** (focalizzato sul testo) configurato sul server.
+1.  Il worker costruisce una pipeline di generazione con LangChain usando il **modello narrativo** (focalizzato sul testo) configurato sul server.
 2.  Tutte le informazioni dello storyboard (posizioni, descrizioni dettagliate e contestualizzate, ordine cronologico), insieme a **Nome Tour** e **Lingua di Destinazione**, vengono aggregate e inviate all'endpoint configurato.
 3.  Il modello elabora questo testo strutturale e il nome del tour (es. *"Vacanza a Roma 2026"*) e genera lo script narrativo finale direttamente nella lingua di destinazione.
 4.  **Sincronizzazione**: il modello incorpora nel testo tag inline speciali per indicare esattamente quando il player deve passare alla foto successiva.
@@ -233,19 +233,13 @@ Solo i carichi di lavoro di embedding passano attraverso un modello `transformer
 2.  **Step 2.3 (Tie-Breaking)**: riuso degli embedding persistiti per scegliere tra due Anchor.
 3.  **Fase 3 (Clustering)**: riuso degli embedding persistiti per Tempo+Visivo e Rilevamento Cambiamenti Semantici.
 
-### 3.2 Layer di Inferenza Remota (LangChain/LangGraph)
+### 3.2 Layer di Inferenza Remota (LangChain)
 Tutte le attività generative/orchestrazione modello vengono eseguite tramite un'astrazione client compatibile OpenAI:
 1.  **Modello Multimodale di Arricchimento**: usato in Fase 2, deve accettare input immagine.
 2.  **Modello di Generazione Narrativa**: usato in Fase 5, ottimizzato per output testuali long-form.
 3.  **Agnosticismo Endpoint**: può essere configurato qualsiasi endpoint compatibile (OpenAI, OpenRouter, gateway vLLM self-hosted, bridge compatibili Ollama, ecc.).
 
-### 3.3 Orchestrazione dei Workflow (LangGraph)
-Le fasi della pipeline sono modellate come workflow `StateGraph` di LangGraph, eseguiti dai worker della pipeline:
-1.  **`PreFilterWorkflow`**: ordinamento per data → rimozione duplicati (Fasi 0–1).
-2.  **`EnrichmentWorkflow`**: propagazione delle posizioni → generazione delle descrizioni (Fase 2).
-3.  Il clustering (Fase 3) e la sintesi narrativa (Fase 5) sono modellati come workflow allo stesso modo.
-
-### 3.4 Configurazione AI Lato Server
+### 3.3 Configurazione AI Lato Server
 1.  URL endpoint, chiave API e identificativo del modello di arricchimento e del modello narrativo sono definiti dall'operatore nella configurazione del server (variabili d'ambiente / file `.env`). Non vengono mai salvati nel database né inviati al browser.
 2.  Gli utenti non configurano nulla: non esistono un wizard di setup né una pagina di impostazioni AI.
 3.  All'avvio il servizio valida la configurazione con una chiamata di test leggera e verifica che il modello di arricchimento sia vision-capable.
@@ -368,18 +362,6 @@ Il servizio è disponibile solo per gli utenti registrati.
 Gli utenti potranno pubblicare un tour completato, riproducibile a un URL pubblico servito dalla piattaforma, in alternativa all'esportazione del pacchetto. Ogni tour ha un livello di visibilità (privato, solo con link, pubblico); le foto pubblicate vengono ridimensionate e private dei metadati EXIF, così che le coordinate GPS degli originali non vengano esposte.
 
 ---
-
-## 8. Utility di Sviluppo: Fill Settings
-
-Lo script `scripts/fill_settings.py` è un helper solo sviluppo per popolare rapidamente le impostazioni AI da prompt terminale.
-
-Eseguilo dalla root del progetto come modulo Python:
-
-```bash
-python -m scripts.fill_settings
-```
-
-Usa l'esecuzione come modulo (`-m`) invece di eseguire il file direttamente, così Python risolve correttamente gli import di pacchetto (per esempio `from app.settings import ...`).
 
 ## Licenza
 
