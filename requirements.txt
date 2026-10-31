@@ -1,9 +1,11 @@
 httpx
 langchain
 langchain-openai
+langchain-openrouter
 markitdown
 Pillow
 platformdirs
-pyside6
+python-dotenv
+PyMySQL
 SQLAlchemy
 transformers
