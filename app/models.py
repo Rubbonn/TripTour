@@ -3,7 +3,7 @@ Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
 '''
 
 from datetime import datetime
-from sqlalchemy import select, ForeignKey, JSON
+from sqlalchemy import ForeignKey, JSON
 from sqlalchemy.ext.orderinglist import ordering_list
 from sqlalchemy.orm import Mapped, mapped_column, DeclarativeBase, relationship
 from sqlalchemy.types import TypeDecorator
@@ -43,9 +43,8 @@ class TourModel(Base):
 	title: Mapped[str]
 	language: Mapped[str]
 	created_at: Mapped[datetime] = mapped_column(default=datetime.now)
-	images: Mapped[list['ImageModel']] = relationship(back_populates='tour')
-	# Le scene sono ordinate nel tour: ordering_list aggiorna position seguendo l'ordine della lista
-	scenes: Mapped[list['SceneModel']] = relationship(back_populates='tour', order_by='SceneModel.position', collection_class=ordering_list('position'))
+	images: Mapped[list['ImageModel']] = relationship(back_populates='tour', order_by='ImageModel.filename')
+	scenes: Mapped[list['SceneModel']] = relationship(back_populates='tour', order_by='SceneModel.position', collection_class=ordering_list('position'), lazy='selectin')
 
 	def __repr__(self):
 		return f'Tour(id={self.id}, title="{self.title}", language="{self.language}", created_at="{self.created_at}")'
@@ -56,7 +55,6 @@ class ImageModel(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	id_tour: Mapped[int] = mapped_column(ForeignKey('tours.id'))
 	tour: Mapped['TourModel'] = relationship(back_populates='images')
-	# Una foto appartiene al massimo a una scena: è vuota finché il clustering non l'ha assegnata
 	id_scene: Mapped[int | None] = mapped_column(ForeignKey('scenes.id'))
 	scene: Mapped['SceneModel | None'] = relationship(back_populates='images')
 	position: Mapped[int | None]
@@ -83,6 +81,6 @@ class SceneModel(Base):
 	id: Mapped[int] = mapped_column(primary_key=True)
 	id_tour: Mapped[int] = mapped_column(ForeignKey('tours.id'))
 	tour: Mapped['TourModel'] = relationship(back_populates='scenes')
-	position: Mapped[int]
-	images: Mapped[list['ImageModel']] = relationship(back_populates='scene', order_by='ImageModel.position', collection_class=ordering_list('position'))
 	title: Mapped[str]
+	position: Mapped[int]
+	images: Mapped[list['ImageModel']] = relationship(back_populates='scene', order_by='ImageModel.position', collection_class=ordering_list('position'), lazy='selectin')
