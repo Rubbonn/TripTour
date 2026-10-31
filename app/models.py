@@ -34,29 +34,7 @@ class TensorJSON(TypeDecorator):
 		return torch.tensor(value, dtype=torch.float32)
 
 class Base(DeclarativeBase):
-	@classmethod
-	def _get_session(cls):
-		from app.database import db
-		return db.session()
-
-	@classmethod
-	def get(cls, primary_key: Any):
-		return cls._get_session().get(cls, primary_key)
-
-	@classmethod
-	def all(cls):
-		return cls._get_session().scalars(select(cls)).all()
-
-	def save(self):
-		session = self._get_session()
-		session.add(self)
-		session.commit()
-		return self
-
-	def delete(self):
-		session = self._get_session()
-		session.delete(self)
-		session.commit()
+	pass
 
 class TourModel(Base):
 	__tablename__ = 'tours'
