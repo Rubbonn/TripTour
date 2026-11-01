@@ -157,8 +157,11 @@ class Database:
 		session = _session_context.get()
 		if session is None:
 			return
-		session.close()
-		_session_context.set(None)
+
+		try:
+			session.close()
+		finally:
+			_session_context.set(None)
 
 	@contextmanager
 	def session_scope(self) -> Generator[None]:
