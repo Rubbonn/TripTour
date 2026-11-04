@@ -17,6 +17,8 @@ _KNOWN_KEYS = frozenset({
 	'MARIADB_USER',
 	'MARIADB_PASSWORD',
 	'MARIADB_DATABASE',
+	'OPENROUTER_API_KEY',
+	'OPENROUTER_MODEL',
 })
 
 # Le variabili d'ambiente reali hanno priorità sul file .env (12-factor): in
