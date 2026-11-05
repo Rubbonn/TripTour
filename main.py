@@ -18,9 +18,13 @@ Copyright (C) 2026  Ruben Giuriato
 
 from app.images import read_dir
 from app.workflows import PreFilterWorkflow, EnrichmentWorkflow
+from app.tours import Tour
+from datetime import datetime
 
 imgs = read_dir('.')
+t = Tour(None, 'Test Tour', 'it', datetime.now(), imgs)
+
 wf = PreFilterWorkflow()
-print(wf(imgs))
+t.images = wf(t)
 wf = EnrichmentWorkflow()
-print(wf(imgs))
+t.images = wf(t)
