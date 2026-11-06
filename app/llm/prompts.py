@@ -25,9 +25,9 @@ photo_enrichment_first_picture = PromptTemplate.from_template('''This is the fir
 Tour name: "{tour_title}"
 Description language: {language_name}
 File name: {filename}
-GPS position: {f'{lat:.6f}, {lon:.6f}{gps_note}' if lat is not None and lon is not None else 'No GPS coordinates available'}
-Address: {f'{address}{address_note}' if address else 'No address available'}
-Date and time: {f'{date:%Y-%m-%d %H:%M}{date_note}' if date else 'No date available'}
+GPS position: {gps_position}
+Address: {address}
+Date and time: {date}
 
 Wikipedia articles about places near the GPS position:
 {wikipedia_articles}
@@ -35,3 +35,41 @@ Wikipedia articles about places near the GPS position:
 Two images are attached, in this order: the first is the photo to describe ("{filename}"); the second is the next photo of the tour. Use the second image only as visual context (e.g. to understand where the visit continues, or whether the first photo is an overview of something shown up close next); do not describe it.
 
 Describe the first attached image.''')
+
+photo_enrichment_sliding_window = PromptTemplate.from_template('''This is not the first photo of the tour: the previous photo has already been described.
+
+Tour name: "{tour_title}"
+Description language: {language_name}
+File name: {filename}
+GPS position: {gps_position}
+Address: {address}
+Date and time: {date}
+
+Wikipedia articles about places near the GPS position:
+{wikipedia_articles}
+
+Previous photo ("{previous_filename}"), already described:
+{previous_description}
+
+Three images are attached, in this order: the first is the previous photo ("{previous_filename}"), the second is the photo to describe ("{filename}"), the third is the next photo ("{next_filename}"). Use the first image and its description to understand where the visit comes from and to stay consistent with what has already been said (do not repeat it); use the third image only as visual context (e.g. to understand where the visit continues, or whether the current photo is a close-up detail of something seen before or an overview of something shown up close next). Do not describe the previous or the next photo.
+
+Describe the second attached image.''')
+
+photo_enrichment_last_picture = PromptTemplate.from_template('''This is the last photo of the tour: there is no next photo.
+
+Tour name: "{tour_title}"
+Description language: {language_name}
+File name: {filename}
+GPS position: {gps_position}
+Address: {address}
+Date and time: {date}
+
+Wikipedia articles about places near the GPS position:
+{wikipedia_articles}
+
+Previous photo ("{previous_filename}"), already described:
+{previous_description}
+
+Two images are attached, in this order: the first is the previous photo ("{previous_filename}"), the second is the photo to describe ("{filename}"). Use the first image and its description to understand where the visit comes from and to stay consistent with what has already been said (do not repeat it). Do not describe the previous photo.
+
+Describe the second attached image.''')

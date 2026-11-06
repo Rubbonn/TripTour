@@ -5,7 +5,9 @@ Copyright (C) 2026  Ruben Giuriato - Licensed under GNU GPLv3
 from app.constants import _USER_AGENT_
 import httpx
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+	from app.images import Image
 
 class WikipediaSearch:
 	_base_url = 'https://wikipedia.org/w/api.php'
@@ -167,3 +169,18 @@ def coordinates_distance(a: tuple[float, float], b: tuple[float, float]) -> floa
 	lat1, lon1, lat2, lon2 = map(radians, (*a, *b))
 	h = sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2
 	return 2 * 6_371_000 * asin(sqrt(h))
+
+def prepare_chat_history(system_prompt: str, user_prompt: str, images: list['Image'] | None = None) -> list[dict]:
+	from base64 import standard_b64encode
+	chat_history = [
+		{'role': 'system', 'content': system_prompt},
+		{'role': 'user', 'content': [{'type':'text', 'text': user_prompt}]}
+	]
+	if images:
+		for image in images:
+			chat_history[-1]['content'].append({
+				'type': 'image',
+				'mime_type': image.mime,
+				'base64': standard_b64encode(image.read()).decode('utf-8')
+			})
+	return chat_history

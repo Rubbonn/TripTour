@@ -65,32 +65,60 @@ class EnrichmentWorkflow:
 	@classmethod
 	def _enrich_images(cls, tour: Tour) -> list[Image]:
 		from app.llm.vlm import Vlm
-		from app.llm.prompts import photo_enrichment_system_prompt, photo_enrichment_first_picture
-		from app.utils import WikipediaSearch
+		from app.llm.prompts import photo_enrichment_system_prompt, photo_enrichment_first_picture, photo_enrichment_sliding_window, photo_enrichment_last_picture
+		from app.utils import WikipediaSearch, prepare_chat_history
+		from base64 import standard_b64encode
 		vlm = Vlm()
 		for i, image in enumerate(tour.images):
 			if image.description is not None:
 				continue
 
-			if image.gps_coordinates is not None:
+			if image.gps_coordinates:
 				wikipedia_articles = WikipediaSearch.search_by_coordinates(image.gps_coordinates[0], image.gps_coordinates[1])
 			else:
-				wikipedia_articles = []
+				wikipedia_articles = {}
 			if i == 0:
 				prompt = photo_enrichment_first_picture.format(
 					tour_title=tour.title,
 					language_name=tour.language,
 					filename=image.filename,
-					lat=image.gps_coordinates[0] if image.gps_coordinates else None,
-					lon=image.gps_coordinates[1] if image.gps_coordinates else None,
-					gps_note=' (estimated)' if image.gps_confidence > 1 else '',
-					address=image.address if image.address else None,
-					address_note=' (estimated)' if image.address_confidence > 1 else '',
-					date=image.date if image.date else None,
-					date_note=' (estimated)' if image.date_confidence > 1 else '',
-					wikipedia_articles='\n'.join(f'- {article}' for article in wikipedia_articles) if wikipedia_articles else 'No Wikipedia articles available',
+					gps_position=f'{image.gps_coordinates[0]:.6f}, {image.gps_coordinates[1]:.6f}{' (estimated)' if image.gps_confidence > 1 else ''}' if image.gps_coordinates else 'No GPS coordinates available',
+					address=f'{image.address}{' (estimated)' if image.address_confidence > 1 else ''}' if image.address else 'No address available',
+					date=f'{image.date:%Y-%m-%d %H:%M}{' (estimated)' if image.date_confidence > 1 else ''}' if image.date else 'No date available',
+					wikipedia_articles='\n'.join(f'# {title}\n{article}' for title, article in wikipedia_articles.items()) if wikipedia_articles else 'No Wikipedia articles available',
 				)
-				print(f'--- Enrichment prompt for first image ({image.filename}) ---\n{prompt}\n--- End of prompt ---')
+				images_to_attach = [image, tour.images[i + 1]]
+			elif i == len(tour.images) - 1:
+				prompt = photo_enrichment_last_picture.format(
+					tour_title=tour.title,
+					language_name=tour.language,
+					filename=image.filename,
+					gps_position=f'{image.gps_coordinates[0]:.6f}, {image.gps_coordinates[1]:.6f}{' (estimated)' if image.gps_confidence > 1 else ''}' if image.gps_coordinates else 'No GPS coordinates available',
+					address=f'{image.address}{' (estimated)' if image.address_confidence > 1 else ''}' if image.address else 'No address available',
+					date=f'{image.date:%Y-%m-%d %H:%M}{' (estimated)' if image.date_confidence > 1 else ''}' if image.date else 'No date available',
+					wikipedia_articles='\n'.join(f'# {title}\n{article}' for title, article in wikipedia_articles.items()) if wikipedia_articles else 'No Wikipedia articles available',
+					previous_filename=tour.images[i - 1].filename,
+					previous_description=tour.images[i - 1].description or '',
+				)
+				images_to_attach = [tour.images[i - 1], image]
+			else:
+				prompt = photo_enrichment_sliding_window.format(
+					tour_title=tour.title,
+					language_name=tour.language,
+					filename=image.filename,
+					gps_position=f'{image.gps_coordinates[0]:.6f}, {image.gps_coordinates[1]:.6f}{' (estimated)' if image.gps_confidence > 1 else ''}' if image.gps_coordinates else 'No GPS coordinates available',
+					address=f'{image.address}{' (estimated)' if image.address_confidence > 1 else ''}' if image.address else 'No address available',
+					date=f'{image.date:%Y-%m-%d %H:%M}{' (estimated)' if image.date_confidence > 1 else ''}' if image.date else 'No date available',
+					wikipedia_articles='\n'.join(f'# {title}\n{article}' for title, article in wikipedia_articles.items()) if wikipedia_articles else 'No Wikipedia articles available',
+					previous_filename=tour.images[i - 1].filename,
+					previous_description=tour.images[i - 1].description or '',
+					next_filename=tour.images[i + 1].filename,
+				)
+				images_to_attach = [tour.images[i - 1], image, tour.images[i + 1]]
+			print(f'--- Enrichment prompt ({image.filename}) ---\n{prompt}\n--- End of prompt ---')
+			response = vlm(prepare_chat_history(photo_enrichment_system_prompt, prompt, images=images_to_attach))
+			print(f'--- Enrichment response ({image.filename}) ---\n{response}\n--- End of response ---')
+			image.description = response
 
 	def __call__(self, tour: Tour) -> list[Image]:
 		images = self._propagate_positions(tour.images)
