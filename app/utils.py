@@ -181,6 +181,6 @@ def prepare_chat_history(system_prompt: str, user_prompt: str, images: list['Ima
 			chat_history[-1]['content'].append({
 				'type': 'image',
 				'mime_type': image.mime,
-				'base64': standard_b64encode(image.read()).decode('utf-8')
+				'base64': standard_b64encode(image.thumbnail()).decode('utf-8')
 			})
 	return chat_history

@@ -16,6 +16,7 @@ import re
 from typing import cast, TYPE_CHECKING
 if TYPE_CHECKING:
 	from torch import Tensor
+	from PIL.ImageFile import ImageFile
 
 class Image:
 	def __init__(self, id: int | None, path: str, filename: str, mime: str, gps_coordinates: tuple[float, float] | None, gps_confidence: int, address: str | None, address_confidence: int, date: datetime | None, date_confidence: int, description: str | None, laplacian_variance: float, embedding: 'Tensor | None'):
@@ -98,6 +99,14 @@ class Image:
 	def cosine_similarity(self, other: 'Image') -> float:
 		from torch.nn.functional import cosine_similarity
 		return cosine_similarity(self.embedding, other.embedding).item()
+
+	def thumbnail(self, size: tuple[int, int] = (1024, 1024)) -> bytes:
+		from io import BytesIO
+		pil_image = PILImage.open(self.path)
+		pil_image.thumbnail(size, PILImage.Resampling.BILINEAR)
+		output = BytesIO()
+		pil_image.save(output, format='JPEG')
+		return output.getvalue()
 
 	@classmethod
 	def _extract_gps_coordinates_from_exif(cls, path: str) -> tuple[float, float] | None:

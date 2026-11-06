@@ -28,3 +28,5 @@ wf = PreFilterWorkflow()
 t.images = wf(t)
 wf = EnrichmentWorkflow()
 t.images = wf(t)
+for img in t.images:
+	print(f'{img.filename}\n{img.description}\n')

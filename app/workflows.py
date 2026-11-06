@@ -115,10 +115,9 @@ class EnrichmentWorkflow:
 					next_filename=tour.images[i + 1].filename,
 				)
 				images_to_attach = [tour.images[i - 1], image, tour.images[i + 1]]
-			print(f'--- Enrichment prompt ({image.filename}) ---\n{prompt}\n--- End of prompt ---')
 			response = vlm(prepare_chat_history(photo_enrichment_system_prompt, prompt, images=images_to_attach))
-			print(f'--- Enrichment response ({image.filename}) ---\n{response}\n--- End of response ---')
 			image.description = response
+		return tour.images
 
 	def __call__(self, tour: Tour) -> list[Image]:
 		images = self._propagate_positions(tour.images)
