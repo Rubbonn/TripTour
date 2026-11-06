@@ -76,6 +76,7 @@ class EnrichmentWorkflow:
 	def enrich_image(tour: Tour, image_index: int) -> str:
 		from app.llm.vlm import Vlm
 		from app.llm.prompts import photo_enrichment_system_prompt, photo_enrichment_first_picture, photo_enrichment_sliding_window, photo_enrichment_last_picture
+		from app.llm.tools import wikipedia_search_keyword
 		from app.utils import WikipediaSearch, prepare_chat_history
 		vlm = Vlm()
 		image = tour.images[image_index]
@@ -127,7 +128,7 @@ class EnrichmentWorkflow:
 				next_filename=next_image.filename,
 			)
 			images_to_attach = [prev_image, image, next_image]
-		response = vlm(prepare_chat_history(photo_enrichment_system_prompt, prompt, images=images_to_attach))
+		response = vlm(prepare_chat_history(photo_enrichment_system_prompt, prompt, images=images_to_attach), tools=[wikipedia_search_keyword])
 		return response
 
 	def __call__(self, tour: Tour) -> list[Image]:
